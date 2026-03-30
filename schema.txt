@@ -1,0 +1,48 @@
+# NetflixDB Architecture - PostgreSQL Schema Explanation
+
+This document explains the PostgreSQL database structure constructed from `schema.sql` and `schema_update.sql`, designed for a scalable media streaming and engagement platform like Netflix.
+
+## 1. Core Media Tables
+The database distinguishes between movies and TV series by using a base `Media` table and specialized sub-tables.
+
+* **`Media`**: The central table for all entertainment content. 
+  * Replaces TMDB API caching. 
+  * Stores fields common to both movies and series: `media_id` (UUID), `title`, `plot_summary`, `release_year`, `poster_url`, `backdrop_url`, `rating` (0-10 scale dynamically calculated by a Trigger function), and `num_votes`.
+* **`Movie`**: Inherits (via Foreign Key) from `Media`. 
+  * Stores fields specific to movies: `box_office_worldwide`, `production_budget`, `aspect_ratio`, and `tagline`.
+* **`TVSeries`**: Inherits (via Foreign Key) from `Media`. 
+  * Stores fields specific to shows: `total_seasons`, `total_episodes`, `status` (`ongoing`, `ended`, `canceled`).
+* **`Season`**: Belongs to a `TVSeries`. Stores season metadata (season number, episode count, air date, poster url).
+* **`Episode`**: Belongs to a `Season`. Stores granular episode information (episode number, title, runtime, plot summary, rating).
+
+## 2. People & Talent
+* **`Person`**: Represents an individual working in the film industry (actor, director, writer). Contains demographics like `full_name`, `birth_date`, `biography`, `gender`, and profile images.
+* **`Credit`**: A Junction Table mapping a `Person` to a `Media` entity. It describes their role.
+  * Fields include: `role_type` (actor, director, producer, writer, crew), `job_title` (e.g., Executive Producer), and `character_name` for actors.
+
+## 3. Classification & Metadata
+* **`Genre`**: Available categories natively in the database (e.g., Action, Sci-Fi, Comedy).
+* **`MediaGenre`**: A Junction Table that binds a `Media` entry to one or more `Genre`s.
+
+## 4. Awards
+* **`Award`**: Tracks accolades won by media or specific talent. 
+  * Includes `name` (e.g., Academy Award), `category` (e.g., Best Picture), and a boolean `is_winner`. It dynamically references a combination of `media_id` and optionally `person_id`.
+
+## 5. User & Engagement Tables
+These replace the MongoDB `User` model, heavily normalizing user interactions.
+
+* **`User`**: Account data. 
+  * Fields: `username`, `email`, `password_hash`, `role` (user/admin), `profile_picture`.
+* **`Rating`**: Stores a 1-10 numerical rating a specific `User` gives to a `Media` item. 
+  * **Trigger (`update_media_rating`)**: When a User inserts/updates their Rating, a PostgreSQL DB Trigger automatically calculates the new average score and updates the `rating` field on the main `Media` table.
+* **`Review`**: Text-based reviews placed by a `User` on `Media`. Includes up/downvotes and a `contains_spoiler` flag.
+* **`ReviewVote`**: Tracks which `User` liked/disliked a specific `Review`.
+  * **Trigger (`update_review_votes`)**: Automates identical `likes`/`dislikes` integer increments on the `Review` table when a user clicks 'Like'.
+* **`Watchlist`**: Essential table replacing the old Mongoose nested document array. 
+  * Connects `user_id` to `media_id`. This means if a user saves a movie from the TMDB UI, the backend must save a 'stub' representation of the movie in the `Media` table if it hasn't mapped it already, simply to preserve relational integrity.
+
+## 6. Triggers and Automation
+PostgreSQL handles background automation previously requiring Node.js functions:
+1. **`update_updated_at_column()`**: Modifies the `updated_at` timestamps on any UPDATE.
+2. **`update_media_rating()`**: Automatically averages review scores.
+3. **`update_review_votes()`**: Ensures likes/dislikes counts on text Reviews are rigidly accurate mathematically by listening to database INSERT/DELETE/UPDATEs.

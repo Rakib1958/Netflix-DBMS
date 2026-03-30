@@ -15,11 +15,20 @@ const ForgotPassword = () => {
   const handleRequestOtp = async (e) => {
     e.preventDefault();
     try {
-      await forgotPassword(email);
-      toast.success("OTP sent to your email!");
+      const res = await forgotPassword(email);
+      toast.success(res?.message || "OTP sent to your email!");
       setStep(2);
     } catch (error) {
       toast.error(error.response?.data?.message || "User not found");
+    }
+  };
+
+  const handleResendResetOtp = async () => {
+    try {
+      const res = await forgotPassword(email);
+      toast.success(res?.message || "A new code was sent to your email.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Failed to resend");
     }
   };
 
@@ -91,6 +100,14 @@ const ForgotPassword = () => {
               </div>
               <button disabled={isLoading} className="w-full bg-[#e50914] text-white font-bold py-3 rounded hover:bg-[#b20710] transition disabled:opacity-50">
                 {isLoading ? "Reset Password..." : "Reset Password"}
+              </button>
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={handleResendResetOtp}
+                className="w-full text-sm text-gray-400 hover:text-white underline"
+              >
+                Resend OTP
               </button>
             </form>
           )}

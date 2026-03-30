@@ -1,11 +1,21 @@
-import mongoose from "mongoose";
+import "./loadEnv.js";
+import pkg from "pg";
+import { safeError, safeInfo, sanitizeForLog } from "../utils/rotation.js";
+const { Pool } = pkg;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 export async function connectToDB() {
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
-    console.log("MongoDB Connected: ", conn.connection.host);
+    const client = await pool.connect();
+    safeInfo("PostgreSQL Connected!");
+    client.release();
   } catch (error) {
-    console.log("Error connecting to MongoDB: ", error.message);
+    safeError("Error connecting to PostgreSQL:", sanitizeForLog(error));
     process.exit(1);
   }
 }
+
+export { pool };

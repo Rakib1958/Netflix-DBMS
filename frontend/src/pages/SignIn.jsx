@@ -15,9 +15,7 @@ const SignIn = () => {
       const { message } = await login(username, password);
       toast.success(message);
       navigate("/");
-    } catch (error) {
-      console.log(error);
-    }
+    } catch {}
   };
 
   return (

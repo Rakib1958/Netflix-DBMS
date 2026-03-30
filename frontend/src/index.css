@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&display=swap');
 @import "tailwindcss";
 
 *{
@@ -7,4 +8,76 @@
 
 body{
     background-color: #181818;
+}
+
+.hero-title {
+  font-family: "Montserrat", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.hero-swap {
+  border-radius: 0.75rem; /* matches Tailwind rounded-2xl (approx) */
+  overflow: hidden;
+}
+
+.hero-layer {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.hero-static {
+  z-index: 1;
+}
+
+.hero-exit-left {
+  z-index: 1;
+  animation: heroExitLeft 650ms ease both;
+}
+
+.hero-enter-right {
+  z-index: 2;
+  animation: heroEnterRight 650ms ease both;
+}
+
+@keyframes heroExitLeft {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-90px);
+    opacity: 0;
+  }
+}
+
+@keyframes heroEnterRight {
+  from {
+    transform: translateX(90px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Swiper navigation buttons: only visible when the carousel is focused. */
+.cardListCarousel .swiper-button-prev,
+.cardListCarousel .swiper-button-next {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.cardListCarousel:focus-within .swiper-button-prev,
+.cardListCarousel:focus-within .swiper-button-next {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.cardListCarousel:hover .swiper-button-prev,
+.cardListCarousel:hover .swiper-button-next {
+  opacity: 1;
+  pointer-events: auto;
 }

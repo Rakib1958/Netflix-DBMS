@@ -1,29 +1,21 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router";
+import { tmdbGet } from "../lib/tmdbClient";
 
 const RecommendedMovies = ({ movieTitles }) => {
-  const options = {
-    method: "GET",
-    headers: {
-      accept: "application/json",
-      Authorization:
-        "Bearer eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI5NTgzMDFlZGQ2MGEzN2Y3NDlmMzhlNGFmMTJjZDE3YSIsIm5iZiI6MTc0NTQxNjIyNS44NzY5OTk5LCJzdWIiOiI2ODA4ZjAyMTI3NmJmNjRlNDFhYjY0ZWUiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.NA_LMt6-MUBLAvxMRkZtBoUif4p9YQ6aYZo-lv4-PUE",
-    },
-  };
-
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const fetchMovie = async (title) => {
-    const encodedTitle = encodeURIComponent(title);
-    const url = `https://api.themoviedb.org/3/search/movie?query=${encodedTitle}&include_adult=false&language=en-US&page=1`;
-
     try {
-      const res = await fetch(url, options);
-      const data = await res.json();
+      const data = await tmdbGet("search/movie", {
+        query: title,
+        include_adult: "false",
+        language: "en-US",
+        page: 1,
+      });
       return data.results?.[0] || null;
-    } catch (error) {
-      console.log("Error fetching movie: ", error);
+    } catch {
       return null;
     }
   };
@@ -36,7 +28,6 @@ const RecommendedMovies = ({ movieTitles }) => {
       );
       setMovies(results.filter(Boolean));
       setLoading(false);
-      console.log(movies);
     };
 
     if (movieTitles?.length) {

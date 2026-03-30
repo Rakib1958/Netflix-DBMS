@@ -5,6 +5,23 @@ axios.defaults.withCredentials = true;
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
+const normalizeProfilePic = (pic) => {
+  if (!pic) return pic;
+  if (typeof pic !== "string") return pic;
+  if (pic.startsWith("http://") || pic.startsWith("https://") || pic.startsWith("data:")) return pic;
+  const origin = API_URL.replace(/\/api\/?$/, "");
+  const normalizedPath = pic.startsWith("/") ? pic : `/${pic}`;
+  return `${origin}${normalizedPath}`;
+};
+
+const normalizeUser = (u) => {
+  if (!u) return u;
+  return {
+    ...u,
+    profilePic: normalizeProfilePic(u.profilePic),
+  };
+};
+
 export const useAuthStore = create((set) => ({
   // initial states
   user: null,
@@ -15,23 +32,56 @@ export const useAuthStore = create((set) => ({
 
   // functions
 
-  signup: async (username, email, password) => {
-    set({ isLoading: true, message: null });
+  signup: async (username, email, password, adminCode) => {
+    set({ isLoading: true, message: null, error: null });
 
     try {
       const response = await axios.post(`${API_URL}/signup`, {
         username,
         email,
         password,
+        adminCode
       });
 
-      set({ user: response.data.user, isLoading: false });
+      set({ isLoading: false, message: response.data.message });
+      return response.data;
     } catch (error) {
       set({
         isLoading: false,
-        error: error.response.data.message || "Error Signing up",
+        error: error.response?.data?.message || "Error Signing up",
       });
 
+      throw error;
+    }
+  },
+
+  resendVerification: async (email) => {
+    set({ isLoading: true, error: null, message: null });
+    try {
+      const response = await axios.post(`${API_URL}/resend-verification`, { email });
+      set({ isLoading: false, message: response.data.message });
+      return response.data;
+    } catch (error) {
+      set({
+        isLoading: false,
+        error: error.response?.data?.message || "Could not resend code",
+      });
+      throw error;
+    }
+  },
+
+  verifyEmailSignup: async (email, otp) => {
+    set({ isLoading: true, error: null, message: null });
+    try {
+      const response = await axios.post(`${API_URL}/verify-email`, { email, otp });
+      set({
+        user: normalizeUser(response.data.user),
+        message: response.data.message,
+        isLoading: false,
+      });
+      return response.data;
+    } catch (error) {
+      set({ isLoading: false, error: error.response?.data?.message || "Invalid OTP" });
       throw error;
     }
   },
@@ -48,7 +98,7 @@ export const useAuthStore = create((set) => ({
       const { user, message } = response.data;
 
       set({
-        user,
+        user: normalizeUser(user),
         message,
         isLoading: false,
       });
@@ -69,7 +119,7 @@ export const useAuthStore = create((set) => ({
 
     try {
       const response = await axios.get(`${API_URL}/fetch-user`);
-      set({ user: response.data.user, fetchingUser: false });
+      set({ user: normalizeUser(response.data.user), fetchingUser: false });
     } catch (error) {
       set({
         fetchingUser: false,
@@ -110,6 +160,7 @@ export const useAuthStore = create((set) => ({
     try {
       const response = await axios.post(`${API_URL}/forgot-password`, { email });
       set({ isLoading: false, message: response.data.message });
+      return response.data;
     } catch (error) {
       set({ isLoading: false, error: error.response.data.message || "Error" });
       throw error;
@@ -142,9 +193,35 @@ export const useAuthStore = create((set) => ({
     set({ isLoading: true, error: null });
     try {
       const response = await axios.put(`${API_URL}/update-profile`, data);
-      set({ user: response.data.user, isLoading: false, message: response.data.message });
+      set({
+        user: normalizeUser(response.data.user),
+        isLoading: false,
+        message: response.data.message,
+      });
     } catch (error) {
-      set({ isLoading: false, error: error.response.data.message || "Error" });
+      set({ isLoading: false, error: error.response?.data?.message || "Error" });
+      throw error;
+    }
+  },
+
+  uploadProfilePic: async (formData) => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await axios.post(`${API_URL}/upload-profile-pic`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      set((state) => ({
+        user: {
+          ...state.user,
+          profilePic: normalizeProfilePic(response.data.url),
+        },
+        isLoading: false,
+      }));
+      return response.data;
+    } catch (error) {
+      set({ isLoading: false, error: error.response?.data?.message || "Error Uploading" });
       throw error;
     }
   },

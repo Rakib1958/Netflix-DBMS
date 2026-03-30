@@ -34,7 +34,7 @@ const Watchlist = () => {
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {watchlist.map((movie) => (
-            <div key={movie.id} className="relative group bg-[#181818] rounded-lg overflow-hidden border border-[#333333] hover:scale-105 transition duration-300">
+            <div key={movie.id} className="relative group bg-[#181818] rounded-lg overflow-hidden border border-[#333333] hover:scale-[1.08] transition duration-300">
               <Link to={`/movie/${movie.id}`}>
                 <img
                   src={`https://image.tmdb.org/t/p/w500/${movie.backdrop_path || movie.poster_path}`}

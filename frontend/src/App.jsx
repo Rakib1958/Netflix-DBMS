@@ -12,6 +12,9 @@ import HelpCenter from "./pages/HelpCenter";
 import Profile from "./pages/Profile";
 import Watchlist from "./pages/Watchlist";
 import ForgotPassword from "./pages/ForgotPassword";
+import AdminDashboard from "./pages/AdminDashboard";
+import Browse from "./pages/Browse";
+import SearchResults from "./pages/SearchResults";
 
 const App = () => {
   const { user, fetchUser, fetchingUser } = useAuthStore();
@@ -35,7 +38,9 @@ const App = () => {
 
       <Routes>
         <Route path={"/"} element={<Homepage />} />
+        <Route path={"/browse/:tab"} element={<Browse />} />
         <Route path={"/movie/:id"} element={<Moviepage />} />
+        <Route path={"/search"} element={<SearchResults />} />
         <Route path={"/signin"} element={!user ? <SignIn /> : <Navigate to="/" />} />
         <Route path={"/signup"} element={!user ? <SignUp /> : <Navigate to="/" />} />
         <Route path={"/forgot-password"} element={!user ? <ForgotPassword /> : <Navigate to="/" />} />
@@ -43,6 +48,7 @@ const App = () => {
         <Route path={"/help-center"} element={user ? <HelpCenter /> : <Navigate to="/signin" />} />
         <Route path={"/profile"} element={user ? <Profile /> : <Navigate to="/signin" />} />
         <Route path={"/watchlist"} element={user ? <Watchlist /> : <Navigate to="/signin" />} />
+        <Route path={"/admin"} element={user?.role === 'admin' ? <AdminDashboard /> : <Navigate to="/" />} />
       </Routes>
     </div>
   );

@@ -51,22 +51,35 @@ const initialState = steps.reduce((acc, step) => {
   return acc;
 }, {});
 
+const FALLBACK_RECOMMENDATIONS = [
+  "The Shawshank Redemption",
+  "Inception",
+  "The Dark Knight",
+  "Interstellar",
+  "Parasite",
+  "Mad Max: Fury Road",
+  "Titanic",
+  "The Grand Budapest Hotel",
+  "Get Out",
+  "Arrival",
+];
+
 const AIRecommendations = () => {
   const [inputs, setInputs] = useState(initialState);
   const [step, setStep] = useState(0);
   const [recommendation, setRecommendation] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isFallback, setIsFallback] = useState(false);
 
   const handleOption = (value) => {
-    setInputs({ ...inputs, [steps[step].name]: value });
-    console.log(inputs);
+    setInputs((prev) => ({ ...prev, [steps[step].name]: value }));
   };
 
   const handleNext = () => {
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
-      console.log(inputs);
+      // no-op
     }
   };
 
@@ -77,58 +90,50 @@ const AIRecommendations = () => {
   };
 
   const generateRecommendations = async () => {
-    if (!inputs) {
-      toast("Please enter your inputs.");
+    const missing = steps.some((s) => !inputs[s.name]);
+    if (missing) {
+      toast.error("Please complete all selections before finishing.");
+      return;
     }
 
     setIsLoading(true);
 
-    const userPrompt = `Given the following user inputs:
+    try {
+      const result = await getAIRecommendation(inputs);
 
-- Decade: ${inputs.decade}
-- Genre: ${inputs.genre}
-- Language: ${inputs.language}
-- Length: ${inputs.length}
-- Mood: ${inputs.mood}
+      const titles = Array.isArray(result.recommendations)
+        ? result.recommendations
+            .map((x) => (typeof x === "string" ? x : x?.title || x?.name))
+            .filter(Boolean)
+            .slice(0, 10)
+        : [];
 
-Recommend 10 ${inputs.mood.toLowerCase()} ${
-      inputs.language
-    }-language ${inputs.genre.toLowerCase()} movies released in the ${
-      inputs.decade
-    } with a runtime between ${
-      inputs.length
-    }. Return the list as plain JSON array of movie titles only, No extra text, no explanations, no code blocks, no markdown, just the JSON array.
-    example:
-[
-  "Movie Title 1",
-  "Movie Title 2",
-  "Movie Title 3",
-  "Movie Title 4",
-  "Movie Title 5",
-  "Movie Title 6",
-  "Movie Title 7",
-  "Movie Title 8",
-  "Movie Title 9",
-  "Movie Title 10"
-]`;
-
-    const result = await getAIRecommendation(userPrompt);
-
-    setIsLoading(false);
-
-    if (result) {
-      const cleanedResult = result
-        .replace(/```json\n/i, "")
-        .replace(/\n```/i, "");
-      try {
-        const recommendationArray = JSON.parse(cleanedResult);
-        setRecommendation(recommendationArray);
-        console.log(recommendationArray);
-      } catch (error) {
-        console.log("Error: ", error);
+      if (titles.length === 0) {
+        toast.error("AI returned an unexpected format. Showing fallback recommendations.");
+        setRecommendation(FALLBACK_RECOMMENDATIONS);
+        setIsFallback(true);
+        return;
       }
-    } else {
-      toast.error("Failed to get recommendations.");
+
+      setRecommendation(titles);
+      setIsFallback(!!result.fallback);
+
+      if (result.fallback && result.message) {
+        toast(result.message, { icon: "ℹ️" });
+      }
+    } catch (err) {
+      const message = err?.message || "Failed to get AI recommendations.";
+      const isQuotaError = /rate limit|quota|RESOURCE_EXHAUSTED|429/i.test(message);
+
+      if (isQuotaError) {
+        toast.error("AI quota or rate limit hit. Showing a fallback movie list instead.");
+        setRecommendation(FALLBACK_RECOMMENDATIONS);
+        setIsFallback(true);
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setIsLoading(false);
     }
   };
   return (
@@ -144,6 +149,34 @@ Recommend 10 ${inputs.mood.toLowerCase()} ${
         <div className="w-full max-w-7xl mx-auto mt-2">
           <h2 className="text-2xl font-bold text-white mb-4 text-center">AI Recommended Movies</h2>
           <RecommendedMovies movieTitles={recommendation} />
+          {isFallback && (
+            <div className="mt-4 flex flex-col gap-3 items-center">
+              <div className="mt-2 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFallback(false);
+                    setRecommendation([]);
+                    generateRecommendations();
+                  }}
+                  className="px-5 py-2 rounded-lg font-semibold transition border-2 border-[#e50914] text-white bg-[#e50914] hover:bg-[#b0060f]"
+                >
+                  Try AI Again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFallback(false);
+                    setRecommendation([]);
+                    setStep(0);
+                  }}
+                  className="px-5 py-2 rounded-lg font-semibold transition border-2 border-gray-600 text-white bg-gray-700 hover:bg-gray-600"
+                >
+                  Change Inputs
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="relative w-full max-w-md mx-auto rounded-2xl bg-[#181818]/90 shadow-2xl border border-[#333] px-8 py-10 mt-4 flex flex-col items-center min-h-[480px]">
