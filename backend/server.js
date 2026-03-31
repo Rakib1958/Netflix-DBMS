@@ -2,7 +2,7 @@ import "./config/loadEnv.js";
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { connectToDB, pool } from "./config/db.js";
+import { connectToDB, User, Media, Review, Rating, ensureDynamicColumns } from "../database/index.js";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
@@ -126,19 +126,6 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
   }
 });
 
-const ensureDynamicColumns = async () => {
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS reset_password_otp VARCHAR(10)`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS reset_password_expires BIGINT`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT TRUE`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS verification_token VARCHAR(255)`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS verification_expires BIGINT`);
-  await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS tmdb_id VARCHAR(50) UNIQUE`);
-  await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS tmdb_data JSONB`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE`);
-  await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS banned_until BIGINT`);
-  await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS admin_metadata JSONB DEFAULT '{}'::jsonb`);
-};
-
 const liftExpiredBanIfNeeded = async (userRow) => {
   if (!userRow) return userRow;
   const userId = userRow._id ?? userRow.user_id;
@@ -161,11 +148,7 @@ const protectRoute = async (req, res, next) => {
     if (!token) return res.status(401).json({ message: "Not authorized" });
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const { rows } = await pool.query(
-      'SELECT user_id AS _id, username, email, role, profile_picture AS "profilePic", birth_date, country_code, registered_at, last_login, is_banned, banned_until FROM "User" WHERE user_id = $1',
-      [decoded.id]
-    );
-    const user = rows[0];
+    const user = await User.findById(decoded.id);
     if (!user) return res.status(404).json({ message: "User not found" });
     await liftExpiredBanIfNeeded(user);
     if (user.is_banned) return res.status(403).json({ message: banBlockedMessage(user) });
@@ -182,8 +165,8 @@ const adminRoute = async (req, res, next) => {
         const token = req.cookies.token;
         if (!token) return res.status(401).json({ message: "Not authorized" });
         const decoded = jwt.verify(token, JWT_SECRET);
-        const { rows } = await pool.query('SELECT user_id, role FROM "User" WHERE user_id = $1', [decoded.id]);
-        if (!rows[0] || rows[0].role !== 'admin') {
+        const user = await User.findById(decoded.id);
+        if (!user || user.role !== 'admin') {
             return res.status(403).json({ message: "Admin access required" });
         }
         next();
@@ -196,13 +179,13 @@ app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
   try {
     await ensureDynamicColumns();
-    const { rows } = await pool.query('SELECT * FROM "User" WHERE email = $1', [email]);
-    if (!rows[0]) return res.status(404).json({ message: "User not found" });
+    const user = await User.findByEmail(email);
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expires = Date.now() + 10 * 60 * 1000;
 
-    await pool.query('UPDATE "User" SET reset_password_otp = $1, reset_password_expires = $2 WHERE email = $3', [otp, expires, email]);
+    await User.updateResetToken(email, otp, expires);
 
     if (!isEmailConfigured()) {
       return res
@@ -221,8 +204,8 @@ app.post("/api/forgot-password", async (req, res) => {
 app.post("/api/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
   try {
-    const { rows } = await pool.query('SELECT * FROM "User" WHERE email = $1 AND reset_password_otp = $2', [email, otp]);
-    if (!rows[0] || rows[0].reset_password_expires < Date.now()) return res.status(400).json({ message: "Invalid/expired OTP" });
+    const user = await User.findByResetToken(email, otp);
+    if (!user || user.reset_password_expires < Date.now()) return res.status(400).json({ message: "Invalid/expired OTP" });
     res.status(200).json({ message: "OTP verified" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
@@ -230,11 +213,11 @@ app.post("/api/verify-otp", async (req, res) => {
 app.post("/api/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
   try {
-    const { rows } = await pool.query('SELECT * FROM "User" WHERE email = $1 AND reset_password_otp = $2', [email, otp]);
-    if (!rows[0] || rows[0].reset_password_expires < Date.now()) return res.status(400).json({ message: "Invalid/expired OTP" });
+    const user = await User.findByResetToken(email, otp);
+    if (!user || user.reset_password_expires < Date.now()) return res.status(400).json({ message: "Invalid/expired OTP" });
 
     const hashedPassword = await bcryptjs.hash(newPassword, 10);
-    await pool.query('UPDATE "User" SET password_hash = $1, reset_password_otp = NULL, reset_password_expires = NULL WHERE email = $2', [hashedPassword, email]);
+    await User.resetPassword(email, hashedPassword);
     res.status(200).json({ message: "Password reset successfully" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
@@ -242,30 +225,31 @@ app.post("/api/reset-password", async (req, res) => {
 app.put("/api/update-profile", protectRoute, async (req, res) => {
   const { username, email, password, birth_date, country_code } = req.body;
   try {
-    if (username) await pool.query('UPDATE "User" SET username = $1 WHERE user_id = $2', [username, req.user._id]);
-    if (email) await pool.query('UPDATE "User" SET email = $1 WHERE user_id = $2', [email, req.user._id]);
+    const updates = {};
+    if (username) updates.username = username;
+    if (email) updates.email = email;
     if (password) {
-        const hash = await bcryptjs.hash(password, 10);
-        await pool.query('UPDATE "User" SET password_hash = $1 WHERE user_id = $2', [hash, req.user._id]);
+        updates.passwordHash = await bcryptjs.hash(password, 10);
     }
     if (birth_date !== undefined) {
-      const bd = birth_date === "" || birth_date === null ? null : birth_date;
-      await pool.query('UPDATE "User" SET birth_date = $1 WHERE user_id = $2', [bd, req.user._id]);
+      updates.birthDate = birth_date === "" || birth_date === null ? null : birth_date;
     }
+    if (country_code !== undefined) updates.countryCode = country_code;
+
+    await User.updateProfile(req.user._id, updates);
     if (country_code !== undefined) {
       let cc = country_code === "" || country_code === null ? null : String(country_code).trim().toUpperCase();
       if (cc !== null && cc.length !== 2) {
         return res.status(400).json({ message: "country_code must be a 2-letter ISO code (e.g. US, BD) or empty." });
       }
-      await pool.query('UPDATE "User" SET country_code = $1 WHERE user_id = $2', [cc, req.user._id]);
+      updates.countryCode = cc;
     }
 
-    const { rows } = await pool.query(
-      'SELECT user_id AS _id, username, email, role, profile_picture AS "profilePic", birth_date, country_code, registered_at, last_login FROM "User" WHERE user_id = $1',
-      [req.user._id]
-    );
-    const wlRows = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [req.user._id]);
-    res.status(200).json({ user: { ...rows[0], watchlist: wlRows.rows.map(r => r.tmdb_data) }, message: "Profile updated" });
+    await User.updateProfile(req.user._id, updates);
+
+    const user = await User.findById(req.user._id);
+    const watchlist = await User.getWatchlist(req.user._id);
+    res.status(200).json({ user: { ...user, watchlist }, message: "Profile updated" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
@@ -273,7 +257,7 @@ app.post("/api/upload-profile-pic", protectRoute, upload.single("profilePic"), a
    try {
        if (!req.file) return res.status(400).json({ message: "No file uploaded" });
        const relativeUrl = `/uploads/${req.file.filename}`;
-       await pool.query('UPDATE "User" SET profile_picture = $1 WHERE user_id = $2', [relativeUrl, req.user._id]);
+       await User.updateProfilePicture(req.user._id, relativeUrl);
        res.status(200).json({ message: "Profile picture uploaded", url: relativeUrl });
    } catch(err) { res.status(500).json({ message: err.message }); }
 });
@@ -284,8 +268,9 @@ app.post("/api/signup", async (req, res) => {
     if (!username || !email || !password) throw new Error("All fields are required!");
     await ensureDynamicColumns();
 
-    if ((await pool.query('SELECT * FROM "User" WHERE email = $1', [email])).rowCount > 0) return res.status(400).json({ message: "User already exists." });
-    if ((await pool.query('SELECT * FROM "User" WHERE username = $1', [username])).rowCount > 0) return res.status(400).json({ message: "Username taken." });
+    if (await User.findByEmail(email)) return res.status(400).json({ message: "User already exists." });
+    const existingUsername = await User.findByUsername(username);
+    if (existingUsername) return res.status(400).json({ message: "Username taken." });
 
     const hashedPassword = await bcryptjs.hash(password, 10);
     const verificationOtp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -294,10 +279,15 @@ app.post("/api/signup", async (req, res) => {
     let role = 'user';
     if (adminCode && adminCode === (process.env.ADMIN_SECRET || 'mysecretadmincode')) { role = 'admin'; }
 
-    await pool.query(
-        'INSERT INTO "User" (username, email, password_hash, role, verification_token, verification_expires, is_verified) VALUES ($1, $2, $3, $4, $5, $6, FALSE)',
-        [username, email, hashedPassword, role, verificationOtp, verificationExpires]
-    );
+    await User.create({
+      username,
+      email,
+      passwordHash: hashedPassword,
+      role,
+      verificationToken: verificationOtp,
+      verificationExpires,
+      isVerified: false
+    });
 
     if (!isEmailConfigured()) {
       return res
@@ -316,13 +306,13 @@ app.post("/api/resend-verification", async (req, res) => {
   try {
     if (!email) return res.status(400).json({ message: "Email is required" });
     await ensureDynamicColumns();
-    const { rows } = await pool.query('SELECT * FROM "User" WHERE email = $1', [email]);
-    if (!rows[0]) return res.status(404).json({ message: "No account with this email." });
-    if (rows[0].is_verified) return res.status(400).json({ message: "Account is already verified." });
+    const user = await User.findByEmail(email);
+    if (!user) return res.status(404).json({ message: "No account with this email." });
+    if (user.is_verified) return res.status(400).json({ message: "Account is already verified." });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const verificationExpires = Date.now() + 24 * 60 * 60 * 1000;
-    await pool.query('UPDATE "User" SET verification_token = $1, verification_expires = $2 WHERE email = $3', [otp, verificationExpires, email]);
+    await User.updateVerificationToken(email, otp, verificationExpires);
 
     if (!isEmailConfigured()) {
       return res
@@ -342,16 +332,15 @@ app.post("/api/verify-email", async (req, res) => {
   const { email, otp } = req.body;
   try {
      await ensureDynamicColumns();
-     const { rows } = await pool.query('SELECT * FROM "User" WHERE email = $1 AND verification_token = $2', [email, otp]);
-     const userDoc = rows[0];
-     if (!userDoc) return res.status(400).json({ message: "Invalid verification code" });
-     if (userDoc.verification_expires != null && userDoc.verification_expires < Date.now()) {
-       return res.status(400).json({ message: "Code expired. Use “Resend code” to get a new one." });
+     const user = await User.findByVerificationToken(email, otp);
+     if (!user) return res.status(400).json({ message: "Invalid verification code" });
+     if (user.verification_expires != null && user.verification_expires < Date.now()) {
+       return res.status(400).json({ message: "Code expired. Use 'Resend code' to get a new one." });
      }
 
-     await pool.query('UPDATE "User" SET is_verified = TRUE, verification_token = NULL, verification_expires = NULL WHERE email = $1', [email]);
+     await User.verifyUser(email);
      
-    const token = jwt.sign({ id: userDoc.user_id }, JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user.user_id }, JWT_SECRET, { expiresIn: "7d" });
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -360,15 +349,15 @@ app.post("/api/verify-email", async (req, res) => {
      
      res.status(200).json({
          user: {
-           _id: userDoc.user_id,
-           username: userDoc.username,
-           email: userDoc.email,
-           profilePic: userDoc.profile_picture,
-           role: userDoc.role,
-           birth_date: userDoc.birth_date,
-           country_code: userDoc.country_code,
-           registered_at: userDoc.registered_at,
-           last_login: userDoc.last_login,
+           _id: user.user_id,
+           username: user.username,
+           email: user.email,
+           profilePic: user.profile_picture,
+           role: user.role,
+           birth_date: user.birth_date,
+           country_code: user.country_code,
+           registered_at: user.registered_at,
+           last_login: user.last_login,
            watchlist: [],
          },
          message: "Account Verified Successfully."
@@ -380,39 +369,31 @@ app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   try {
     await ensureDynamicColumns();
-    const { rows } = await pool.query(
-      'SELECT user_id AS _id, username, email, password_hash, role, is_verified, profile_picture AS "profilePic", birth_date, country_code, registered_at, last_login, is_banned, banned_until FROM "User" WHERE username = $1',
-      [username]
-    );
-    const userDoc = rows[0];
+    const user = await User.findByUsername(username);
     
-    if (!userDoc || !bcryptjs.compareSync(password, userDoc.password_hash)) {
+    if (!user || !bcryptjs.compareSync(password, user.password_hash)) {
       return res.status(400).json({ message: "Invalid credentials." });
     }
-    await liftExpiredBanIfNeeded(userDoc);
-    if (userDoc.is_banned) return res.status(403).json({ message: banBlockedMessage(userDoc) });
-    if (userDoc.is_verified === false) return res.status(403).json({ message: "Email not verified. Please verify." });
+    await liftExpiredBanIfNeeded(user);
+    if (user.is_banned) return res.status(403).json({ message: banBlockedMessage(user) });
+    if (user.is_verified === false) return res.status(403).json({ message: "Email not verified. Please verify." });
 
-    await pool.query('UPDATE "User" SET last_login = CURRENT_TIMESTAMP WHERE user_id = $1', [userDoc._id]);
+    await User.updateLastLogin(user._id);
 
-    const token = jwt.sign({ id: userDoc._id }, JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     });
     
-    delete userDoc.password_hash;
-    const { rows: freshRows } = await pool.query(
-      'SELECT user_id AS _id, username, email, role, profile_picture AS "profilePic", birth_date, country_code, registered_at, last_login, is_banned FROM "User" WHERE user_id = $1',
-      [userDoc._id]
-    );
-    Object.assign(userDoc, freshRows[0]);
-    delete userDoc.is_banned;
-    const wlRows = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [userDoc._id]);
-    userDoc.watchlist = wlRows.rows.map(r => r.tmdb_data);
+    delete user.password_hash;
+    const freshUser = await User.findById(user._id);
+    delete freshUser.is_banned;
+    const watchlist = await User.getWatchlist(user._id);
+    freshUser.watchlist = watchlist;
 
-    res.status(200).json({ user: userDoc, message: "Logged in successfully." });
+    res.status(200).json({ user: freshUser, message: "Logged in successfully." });
   } catch (error) { res.status(400).json({ message: error.message }); }
 });
 
@@ -448,21 +429,27 @@ app.post("/api/logout", (req, res) => {
 
 app.get("/api/watchlist", protectRoute, async (req, res) => {
   try {
-      const { rows } = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [req.user._id]);
-      res.status(200).json({ watchlist: rows.map(r => r.tmdb_data) });
+      const watchlist = await User.getWatchlist(req.user._id);
+      res.status(200).json({ watchlist });
   } catch (err) { res.status(200).json({ watchlist: [] }); }
 });
 
 const ensureMediaStub = async (movie) => {
-    let mediaRes = await pool.query('SELECT media_id FROM Media WHERE tmdb_id = $1', [String(movie.id)]);
-    if (mediaRes.rowCount === 0) {
-        const insertRes = await pool.query(`
-            INSERT INTO Media (title, poster_url, backdrop_url, release_date, rating, num_votes, tmdb_id, tmdb_data, media_type)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'movie') RETURNING media_id
-        `, [movie.title || movie.name, movie.poster_path, movie.backdrop_path, movie.release_date || movie.first_air_date || null, movie.vote_average || 0, movie.vote_count || 0, String(movie.id), movie]);
-        return insertRes.rows[0].media_id;
+    let media = await Media.findByTmdbId(String(movie.id));
+    if (!media) {
+        return await Media.create({
+            title: movie.title || movie.name,
+            posterUrl: movie.poster_path,
+            backdropUrl: movie.backdrop_path,
+            releaseDate: movie.release_date || movie.first_air_date || null,
+            rating: movie.vote_average || 0,
+            numVotes: movie.vote_count || 0,
+            tmdbId: String(movie.id),
+            tmdbData: movie,
+            mediaType: 'movie'
+        });
     }
-    return mediaRes.rows[0].media_id;
+    return media.media_id;
 };
 
 app.post("/api/watchlist/add", protectRoute, async (req, res) => {
@@ -470,34 +457,31 @@ app.post("/api/watchlist/add", protectRoute, async (req, res) => {
     await ensureDynamicColumns();
     const mediaId = await ensureMediaStub(req.body.movie);
     
-    if ((await pool.query('SELECT * FROM Watchlist WHERE user_id = $1 AND media_id = $2', [req.user._id, mediaId])).rowCount > 0) {
+    if (await User.checkInWatchlist(req.user._id, mediaId)) {
         return res.status(400).json({ message: "Movie already in watchlist" });
     }
-    await pool.query('INSERT INTO Watchlist (user_id, media_id) VALUES ($1, $2)', [req.user._id, mediaId]);
+    await User.addToWatchlist(req.user._id, mediaId);
     
-    const wlRows = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [req.user._id]);
-    res.status(200).json({ watchlist: wlRows.rows.map(r => r.tmdb_data), message: "Added" });
+    const watchlist = await User.getWatchlist(req.user._id);
+    res.status(200).json({ watchlist, message: "Added" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
 app.delete("/api/watchlist/remove/:id", protectRoute, async (req, res) => {
   try {
-    const mediaRes = await pool.query('SELECT media_id FROM Media WHERE tmdb_id = $1', [String(req.params.id)]);
-    if (mediaRes.rowCount > 0) {
-        await pool.query('DELETE FROM Watchlist WHERE user_id = $1 AND media_id = $2', [req.user._id, mediaRes.rows[0].media_id]);
+    const media = await Media.findByTmdbId(String(req.params.id));
+    if (media) {
+        await User.removeFromWatchlist(req.user._id, media.media_id);
     }
-    const wlRows = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [req.user._id]);
-    res.status(200).json({ watchlist: wlRows.rows.map(r => r.tmdb_data), message: "Removed" });
+    const watchlist = await User.getWatchlist(req.user._id);
+    res.status(200).json({ watchlist, message: "Removed" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
 app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
     try {
         await ensureDynamicColumns();
-        const { rows } = await pool.query(
-            "SELECT admin_metadata, poster_url, backdrop_url, trailer_url FROM Media WHERE tmdb_id = $1",
-            [String(req.params.tmdbId)]
-        );
+        const meta = await Media.getAdminMetadata(String(req.params.tmdbId));
         if (rows.length === 0) {
             return res.status(200).json({
                 admin_metadata: null,
@@ -506,12 +490,11 @@ app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
                 trailer_url: null,
             });
         }
-        const row = rows[0];
         res.status(200).json({
-            admin_metadata: row.admin_metadata || {},
-            poster_url: row.poster_url || null,
-            backdrop_url: row.backdrop_url || null,
-            trailer_url: row.trailer_url || null,
+            admin_metadata: meta.admin_metadata || {},
+            poster_url: meta.poster_url || null,
+            backdrop_url: meta.backdrop_url || null,
+            trailer_url: meta.trailer_url || null,
         });
     } catch (err) {
         res.status(500).json({ message: err.message });
@@ -520,16 +503,12 @@ app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
 
 app.get("/api/media/:tmdbId/reviews", async (req, res) => {
     try {
-        const mediaRes = await pool.query('SELECT media_id FROM Media WHERE tmdb_id = $1', [String(req.params.tmdbId)]);
-        if(mediaRes.rowCount === 0) return res.status(200).json({ reviews: [] });
+        const media = await Media.findByTmdbId(String(req.params.tmdbId));
+        if(!media) return res.status(200).json({ reviews: [] });
         
-        const { rows } = await pool.query(`
-            SELECT r.review_id, r.content, r.likes, r.dislikes, r.posted_at, u.username, u.profile_picture 
-            FROM Review r JOIN "User" u ON r.user_id = u.user_id 
-            WHERE r.media_id = $1 ORDER BY r.posted_at DESC
-        `, [mediaRes.rows[0].media_id]);
+        const reviews = await Review.getReviewsForMedia(media.media_id);
         
-        res.status(200).json({ reviews: rows });
+        res.status(200).json({ reviews });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -539,18 +518,15 @@ app.post("/api/media/:tmdbId/reviews", protectRoute, async (req, res) => {
         if (!content) return res.status(400).json({ message: "Review cannot be empty" });
         if (content.length > 5000) return res.status(400).json({ message: "Review is too long" });
         const mediaId = await ensureMediaStub(req.body.movie);
-        await pool.query('INSERT INTO Review (user_id, media_id, content) VALUES ($1, $2, $3)', [req.user._id, mediaId, content]);
-        const { rows } = await pool.query(`SELECT r.review_id, r.content, r.likes, r.dislikes, r.posted_at, u.username, u.profile_picture FROM Review r JOIN "User" u ON r.user_id = u.user_id WHERE r.media_id = $1 ORDER BY r.posted_at DESC`, [mediaId]);
-        res.status(200).json({ reviews: rows, message: "Review posted" });
+        await Review.createReview(req.user._id, mediaId, content);
+        const reviews = await Review.getReviewsForMedia(mediaId);
+        res.status(200).json({ reviews, message: "Review posted" });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
 app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     try {
-        await pool.query(`
-            INSERT INTO ReviewVote (user_id, review_id, vote_type) VALUES ($1, $2, $3)
-            ON CONFLICT (user_id, review_id) DO UPDATE SET vote_type = EXCLUDED.vote_type
-        `, [req.user._id, req.params.reviewId, req.body.voteType]);
+        await Review.voteOnReview(req.user._id, req.params.reviewId, req.body.voteType);
         res.status(200).json({ message: "Vote registered" }); 
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
@@ -558,10 +534,7 @@ app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
 app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
     try {
         const mediaId = await ensureMediaStub(req.body.movie);
-        await pool.query(`
-            INSERT INTO Rating (user_id, media_id, rating_value) VALUES ($1, $2, $3)
-            ON CONFLICT (user_id, media_id) DO UPDATE SET rating_value = EXCLUDED.rating_value
-        `, [req.user._id, mediaId, req.body.rating]);
+        await Rating.rateMedia(req.user._id, mediaId, req.body.rating);
         res.status(200).json({ message: "Rating saved" });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
@@ -569,10 +542,8 @@ app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
 app.get("/api/admin/users", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
-        const { rows } = await pool.query(
-          'SELECT user_id, username, email, role, is_verified, is_banned, banned_until, registered_at, last_login FROM "User"'
-        );
-        res.status(200).json({ users: rows });
+        const users = await User.getAllUsers();
+        res.status(200).json({ users });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -582,11 +553,8 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
         const { banned, durationHours, durationDays, until, permanent } = req.body || {};
 
         if (banned === false) {
-          const { rowCount } = await pool.query(
-            'UPDATE "User" SET is_banned = FALSE, banned_until = NULL WHERE user_id = $1 AND role <> $2',
-            [req.params.userId, "admin"]
-          );
-          if (rowCount === 0) return res.status(404).json({ message: "User not found or cannot modify" });
+          const success = await User.unbanUser(req.params.userId, "admin");
+          if (!success) return res.status(404).json({ message: "User not found or cannot modify" });
           return res.status(200).json({ message: "Ban lifted" });
         }
 
@@ -605,11 +573,8 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
           bannedUntil = null;
         }
 
-        const { rowCount } = await pool.query(
-            'UPDATE "User" SET is_banned = TRUE, banned_until = $1 WHERE user_id = $2 AND role <> $3',
-            [bannedUntil, req.params.userId, "admin"]
-        );
-        if (rowCount === 0) return res.status(404).json({ message: "User not found or cannot modify" });
+        const success = await User.banUser(req.params.userId, bannedUntil, "admin");
+        if (!success) return res.status(404).json({ message: "User not found or cannot modify" });
         res.status(200).json({
           message: bannedUntil == null ? "User banned (permanent)" : `User banned until ${new Date(bannedUntil).toISOString()}`,
           banned_until: bannedUntil,
@@ -619,27 +584,21 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
 
 app.delete("/api/admin/users/:userId", adminRoute, async (req, res) => {
     try {
-        await pool.query('DELETE FROM "User" WHERE user_id = $1', [req.params.userId]);
+        await User.deleteUser(req.params.userId);
         res.status(200).json({ message: "User deleted" });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
 app.get("/api/admin/reviews", adminRoute, async (req, res) => {
     try {
-        const { rows } = await pool.query(`
-            SELECT r.review_id, r.content, u.username, m.title 
-            FROM Review r 
-            JOIN "User" u ON r.user_id = u.user_id 
-            JOIN Media m ON r.media_id = m.media_id
-            ORDER BY r.posted_at DESC
-        `);
-        res.status(200).json({ reviews: rows });
+        const reviews = await Review.getAllReviewsForAdmin();
+        res.status(200).json({ reviews });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
 app.delete("/api/admin/reviews/:reviewId", adminRoute, async (req, res) => {
     try {
-        await pool.query('DELETE FROM Review WHERE review_id = $1', [req.params.reviewId]);
+        await Review.deleteReview(req.params.reviewId);
         res.status(200).json({ message: "Review removed" });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
@@ -648,23 +607,22 @@ app.put("/api/admin/media/:tmdbId/custom", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
         const mediaId = await ensureMediaStub(req.body.movie);
-        if (req.body.poster_url) await pool.query('UPDATE Media SET poster_url = $1 WHERE media_id = $2', [req.body.poster_url, mediaId]);
-        if (req.body.backdrop_url) await pool.query('UPDATE Media SET backdrop_url = $1 WHERE media_id = $2', [req.body.backdrop_url, mediaId]);
-        if (req.body.trailer_url) await pool.query('UPDATE Media SET trailer_url = $1 WHERE media_id = $2', [req.body.trailer_url, mediaId]);
+        await Media.updateMediaUrls(mediaId, {
+            posterUrl: req.body.poster_url,
+            backdropUrl: req.body.backdrop_url,
+            trailerUrl: req.body.trailer_url
+        });
+        
         const metaPatch = {};
         if (req.body.awards !== undefined) metaPatch.awards = req.body.awards;
         if (req.body.secondary_info !== undefined) metaPatch.secondary_info = req.body.secondary_info;
+        
         if (Object.keys(metaPatch).length > 0) {
-            await pool.query(
-                `UPDATE Media SET admin_metadata = COALESCE(admin_metadata, '{}'::jsonb) || $1::jsonb WHERE media_id = $2`,
-                [JSON.stringify(metaPatch), mediaId]
-            );
+            await Media.updateAdminMetadata(mediaId, metaPatch);
         }
+        
         if (req.body.admin_metadata && typeof req.body.admin_metadata === "object") {
-            await pool.query(
-                `UPDATE Media SET admin_metadata = COALESCE(admin_metadata, '{}'::jsonb) || $1::jsonb WHERE media_id = $2`,
-                [JSON.stringify(req.body.admin_metadata), mediaId]
-            );
+            await Media.updateAdminMetadata(mediaId, req.body.admin_metadata);
         }
         res.status(200).json({ message: "Media customized successfully" });
     } catch(err) { res.status(500).json({ message: err.message }); }

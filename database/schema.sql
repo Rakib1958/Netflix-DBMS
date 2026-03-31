@@ -248,6 +248,47 @@ CREATE TRIGGER trg_update_review_votes
     EXECUTE PROCEDURE update_review_votes();
 
 -- ============================================
+-- STORED PROCEDURES
+-- ============================================
+
+-- Procedure to create a review with initial validation
+CREATE OR REPLACE PROCEDURE create_user_review(
+    p_user_id UUID,
+    p_media_id UUID,
+    p_content TEXT,
+    p_rating INT DEFAULT NULL
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    review_count INT;
+BEGIN
+    -- Check if user already reviewed this media
+    SELECT COUNT(*) INTO review_count
+    FROM Review
+    WHERE user_id = p_user_id AND media_id = p_media_id;
+
+    IF review_count > 0 THEN
+        RAISE EXCEPTION 'User has already reviewed this media';
+    END IF;
+
+    -- Validate rating if provided
+    IF p_rating IS NOT NULL AND (p_rating < 1 OR p_rating > 10) THEN
+        RAISE EXCEPTION 'Rating must be between 1 and 10';
+    END IF;
+
+    -- Insert the review
+    INSERT INTO Review (user_id, media_id, content, rating)
+    VALUES (p_user_id, p_media_id, p_content, p_rating);
+
+    -- Log the action (could be used for audit trail)
+    -- INSERT INTO audit_log (action, user_id, media_id, timestamp)
+    -- VALUES ('review_created', p_user_id, p_media_id, NOW());
+
+END;
+$$;
+
+-- ============================================
 -- INDEXES
 -- ============================================
 
