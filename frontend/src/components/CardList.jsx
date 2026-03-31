@@ -14,7 +14,6 @@ const CardList = ({ title, category, fetchUrl }) => {
 
     const load = async () => {
       try {
-        // Support legacy callers that pass full TMDB URLs.
         const url = fetchUrl || `https://api.themoviedb.org/3/movie/${category}?language=en-US&page=1`;
         const m = String(url).match(/api\.themoviedb\.org\/3\/(.+?)(\?.*)?$/i);
         if (m) {
@@ -25,7 +24,6 @@ const CardList = ({ title, category, fetchUrl }) => {
           return;
         }
 
-        // Newer callers can pass a TMDB path directly via fetchUrl (e.g. "movie/popular").
         if (fetchUrl && !String(fetchUrl).startsWith("http")) {
           const [path, qs = ""] = String(fetchUrl).split("?");
           const extraParams = Object.fromEntries(new URLSearchParams(qs));
@@ -52,7 +50,7 @@ const CardList = ({ title, category, fetchUrl }) => {
     <div className="text-white md:px-4">
       <h2 className="pt-10 pb-5 text-lg font-medium">{title}</h2>
 
-      {/* Focusable wrapper so Swiper navigation buttons only show on focus */}
+      {}
       <div className="cardListCarousel" tabIndex={0}>
         <Swiper
           slidesPerView={5}

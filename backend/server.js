@@ -24,14 +24,10 @@ if (!JWT_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// TMDB can be configured either via:
-// - TMDB_TOKEN: v4 Read Access Token (JWT-like, used as Bearer)
-// - TMDB_API_KEY: v3 API key (passed as `api_key` query param)
 const TMDB_TOKEN = process.env.TMDB_TOKEN?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
-// Setup Multer for profile pictures
 const uploadDir = path.join(path.resolve(), 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
@@ -47,14 +43,11 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// Middlewares
 app.use(express.json());
 app.use(cookieParser());
 app.use(
   cors({
-    // Allow credentials (cookies) while supporting multiple local origins.
     origin: (origin, callback) => {
-      // Requests like curl/health-checks may not have an origin header.
       if (!origin) return callback(null, true);
       callback(null, origin);
     },
@@ -63,9 +56,6 @@ app.use(
 );
 app.use('/uploads', express.static(uploadDir));
 
-// --- TMDB PROXY (keeps token server-side) ---
-// Frontend should call /api/tmdb/<tmdb-path>?<query>
-// Example: /api/tmdb/movie/550?language=en-US
 app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
   try {
     if (!TMDB_TOKEN && !TMDB_API_KEY) {
@@ -75,7 +65,6 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
     }
 
     const tmdbPath = req.params?.[0] || "";
-    // Basic hardening against path tricks.
     if (
       tmdbPath.includes("..") ||
       tmdbPath.includes("\\") ||
@@ -85,7 +74,6 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
       return res.status(400).json({ message: "Invalid TMDB path" });
     }
 
-    // Allow only common API prefixes we use in the app.
     const allowedPrefixes = [
       "movie/",
       "search/",
@@ -108,8 +96,6 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
 
     const isJwtLike = !!TMDB_TOKEN && /^eyJ[A-Za-z0-9_-]+\./.test(TMDB_TOKEN);
     const effectiveApiKey = TMDB_API_KEY || (!isJwtLike ? TMDB_TOKEN : null);
-
-    // If a v3 API key is available, add it as a query parameter (TMDB supports this).
     if (effectiveApiKey) {
       qs.set("api_key", effectiveApiKey);
     }
@@ -140,15 +126,12 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
   }
 });
 
-// Helper: Ensure Dynamic Columns exist smoothly
 const ensureDynamicColumns = async () => {
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS reset_password_otp VARCHAR(10)`);
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS reset_password_expires BIGINT`);
-  // Existing users default to true for safety
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT TRUE`);
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS verification_token VARCHAR(255)`);
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS verification_expires BIGINT`);
-
   await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS tmdb_id VARCHAR(50) UNIQUE`);
   await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS tmdb_data JSONB`);
   await pool.query(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE`);
@@ -156,7 +139,6 @@ const ensureDynamicColumns = async () => {
   await pool.query(`ALTER TABLE Media ADD COLUMN IF NOT EXISTS admin_metadata JSONB DEFAULT '{}'::jsonb`);
 };
 
-/** Clear timed ban when `banned_until` has passed (mutates row in memory + updates DB). */
 const liftExpiredBanIfNeeded = async (userRow) => {
   if (!userRow) return userRow;
   const userId = userRow._id ?? userRow.user_id;
@@ -173,7 +155,6 @@ const banBlockedMessage = (userRow) =>
     ? "Account suspended"
     : `Account suspended until ${new Date(userRow.banned_until).toISOString()}`;
 
-// Middleware to protect routes
 const protectRoute = async (req, res, next) => {
   try {
     const token = req.cookies.token;
@@ -196,7 +177,6 @@ const protectRoute = async (req, res, next) => {
   }
 };
 
-// Middleware for Admin specific access
 const adminRoute = async (req, res, next) => {
     try {
         const token = req.cookies.token;
@@ -211,8 +191,6 @@ const adminRoute = async (req, res, next) => {
         res.status(401).json({ message: "Invalid token" });
     }
 };
-
-// --- AUTH & PROFILE ROUTES ---
 
 app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
@@ -377,8 +355,6 @@ app.post("/api/verify-email", async (req, res) => {
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      // Strict blocks cookies for cross-origin requests (frontend/backends on different ports),
-      // which breaks `fetchUser()` and the avatar/menu UI.
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     });
      
@@ -470,8 +446,6 @@ app.post("/api/logout", (req, res) => {
   res.status(200).json({ message: "Logged out" });
 });
 
-// --- WATCHLIST ROUTES --- 
-
 app.get("/api/watchlist", protectRoute, async (req, res) => {
   try {
       const { rows } = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [req.user._id]);
@@ -516,8 +490,6 @@ app.delete("/api/watchlist/remove/:id", protectRoute, async (req, res) => {
     res.status(200).json({ watchlist: wlRows.rows.map(r => r.tmdb_data), message: "Removed" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
-
-// --- MEDIA ENGAGEMENT (COMMENTS / RATINGS) ---
 
 app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
     try {
@@ -575,7 +547,6 @@ app.post("/api/media/:tmdbId/reviews", protectRoute, async (req, res) => {
 
 app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     try {
-        // voteType = 'like' or 'dislike'
         await pool.query(`
             INSERT INTO ReviewVote (user_id, review_id, vote_type) VALUES ($1, $2, $3)
             ON CONFLICT (user_id, review_id) DO UPDATE SET vote_type = EXCLUDED.vote_type
@@ -595,8 +566,6 @@ app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
-// --- ADMIN API ---
-
 app.get("/api/admin/users", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
@@ -612,7 +581,6 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
         await ensureDynamicColumns();
         const { banned, durationHours, durationDays, until, permanent } = req.body || {};
 
-        // Unban path
         if (banned === false) {
           const { rowCount } = await pool.query(
             'UPDATE "User" SET is_banned = FALSE, banned_until = NULL WHERE user_id = $1 AND role <> $2',
@@ -622,7 +590,6 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
           return res.status(200).json({ message: "Ban lifted" });
         }
 
-        // Ban path
         let bannedUntil = null;
         if (permanent === true) {
           bannedUntil = null;
@@ -635,7 +602,6 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
           if (!Number.isFinite(h) || h <= 0) return res.status(400).json({ message: "Invalid duration" });
           bannedUntil = Date.now() + Math.round(h * 60 * 60 * 1000);
         } else {
-          // Back-compat: { banned: true } => permanent
           bannedUntil = null;
         }
 
@@ -706,18 +672,14 @@ app.put("/api/admin/media/:tmdbId/custom", adminRoute, async (req, res) => {
 
 app.get("/", (req, res) => { res.send("AIFlix Backend is Running!"); });
 
-// --- AI RECOMMENDATION ROUTE ---
-
 const config = {
   responseMimeType: "text/plain",
 };
 
 const DEFAULT_MODEL_CANDIDATES = ["gemini-2.0-flash-001", "gemini-2.0-flash"];
 
-// Simple in-memory cache to reduce Gemini quota usage in dev.
-// Keyed by the exact prompt string.
-const aiCache = new Map(); // prompt -> { expiresAt: number, text: string }
-const AI_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const aiCache = new Map(); 
+const AI_CACHE_TTL_MS = 6 * 60 * 60 * 1000; 
 
 function parseModelList(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -739,7 +701,7 @@ async function getAIRecommendation(prompt) {
   }
 
   const apiKey = process.env.GOOGLE_GENAI_API_KEY;
-  if (!apiKey || String(apiKey).trim() === "" || apiKey.includes("your_gemini_api_key_here")) {
+  if (!apiKey || String(apiKey).trim() === "" || apiKey.includes("AIzaSyAjWA-EtxLo6kUnE7mlrbpi-UzUIXP4MBc")) {
     throw new Error("Missing `GOOGLE_GENAI_API_KEY` in `backend/.env`.");
   }
 

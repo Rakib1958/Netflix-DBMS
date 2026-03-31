@@ -45,14 +45,12 @@ const Navbar = () => {
     const handleMouseDown = (e) => {
       const target = e.target;
 
-      // Close profile menu on outside click.
       if (showMenu) {
         const iconInside = menuIconRef.current?.contains(target);
         const panelInside = menuPanelRef.current?.contains(target);
         if (!iconInside && !panelInside) setShowMenu(false);
       }
 
-      // Close search dropdown on outside click.
       if (showSuggestions) {
         const insideSearch = searchWrapRef.current?.contains(target);
         if (!insideSearch) setShowSuggestions(false);
@@ -63,7 +61,6 @@ const Navbar = () => {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [showMenu, showSuggestions]);
 
-  // Clear the navbar search input after opening a movie page.
   useEffect(() => {
     if (location.pathname.startsWith("/movie/")) {
       setSearchQuery("");
@@ -225,7 +222,6 @@ const Navbar = () => {
               className="w-10 h-10 rounded-full border-2 border-[#e50914] cursor-pointer"
               onClick={() => setShowMenu(!showMenu)}
               onError={() => {
-                // If profilePic URL is broken, fall back to generated initials.
                 if (avatarSrc !== dicebearUrl) setAvatarSrc(dicebearUrl);
                 else setAvatarSrc(initialsFallback);
               }}

@@ -19,12 +19,12 @@ const HelpCenter = () => {
           <div className="bg-[#181818] p-6 rounded-lg text-center hover:bg-[#202020] transition">
             <Mail className="w-8 h-8 mx-auto mb-4 text-red-500" />
             <h3 className="font-semibold mb-2">Email Support</h3>
-            <p className="text-sm text-gray-400">support@aiflix.com</p>
+            <p className="text-sm text-gray-400">rakibcdt1958@gmail.com</p>
           </div>
           <div className="bg-[#181818] p-6 rounded-lg text-center hover:bg-[#202020] transition">
             <Phone className="w-8 h-8 mx-auto mb-4 text-red-500" />
             <h3 className="font-semibold mb-2">Call Center</h3>
-            <p className="text-sm text-gray-400">+1 (800) AIFLIX</p>
+            <p className="text-sm text-gray-400">+8801712345678</p>
           </div>
           <div className="bg-[#181818] p-6 rounded-lg text-center hover:bg-[#202020] transition">
             <MessageSquare className="w-8 h-8 mx-auto mb-4 text-red-500" />

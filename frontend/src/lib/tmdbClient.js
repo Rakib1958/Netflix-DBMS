@@ -34,7 +34,6 @@ export function isFutureReleaseDate(dateStr) {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return false;
   const today = new Date();
-  // Compare at day granularity (avoid timezone jitters).
   const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const b = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   return a > b;

@@ -1,7 +1,4 @@
-/**
- * Lightweight profanity filter — blocks common offensive terms (word-boundary aware).
- * Not exhaustive; admins can still remove edge cases.
- */
+
 const RAW = `
 asshole bastard bitch bullshit crap damn fuck fucking motherfucker
 shit slut whore dick cock pussy cunt nigger faggot

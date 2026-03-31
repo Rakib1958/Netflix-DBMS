@@ -43,7 +43,6 @@ const Hero = () => {
     return () => {};
   }, []);
 
-  // Rotate the hero movie every 5 seconds.
   useEffect(() => {
     if (!movies || movies.length <= 1) return;
     const t = setInterval(() => {
@@ -56,7 +55,6 @@ const Hero = () => {
     return () => clearInterval(t);
   }, [movies, isTransitioning]);
 
-  // Finish the transition and commit to the incoming movie.
   useEffect(() => {
     if (!isTransitioning || incomingIndex === null) return;
     const t = setTimeout(() => {

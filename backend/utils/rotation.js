@@ -1,8 +1,3 @@
-/**
- * Log-safety helpers: mask / rotate sensitive fields (NOT cryptography).
- * Use `safeError` / `safeInfo` / `sanitizeForLog` for anything that might include
- * email, password, tokens, API keys, or connection strings.
- */
 
 export function rotateString(input, shift = 13) {
   const s = String(input ?? "");
@@ -41,7 +36,6 @@ export function redactEmail(email) {
   return `${s[0]}***${s.slice(at)}`;
 }
 
-/** Strip `user:password` from URLs inside an arbitrary string. */
 export function scrubCredentialsInString(str) {
   if (!str || typeof str !== "string") return str;
   return str.replace(/([a-z+]+:\/\/)([^:/?#\s]+):([^@/]+)@/gi, "$1$2:***@");
@@ -83,7 +77,6 @@ function looksLikeJwt(s) {
   return /^eyJ[a-z0-9_-]+\.[a-z0-9._-]*/i.test(s);
 }
 
-/** Deep-clone-ish sanitizer for console / logs */
 export function sanitizeForLog(value, depth = 0, maxDepth = 12) {
   if (value === undefined) return value;
   if (value === null) return value;

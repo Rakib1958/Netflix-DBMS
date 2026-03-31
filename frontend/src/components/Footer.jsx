@@ -4,10 +4,10 @@ const Footer = () => {
   return (
     <div className="text-[#737373] md:px-10">
       <div className="py-20">
-        <p>Developed by John Doe</p>
+        <p>Developed by Rakib, Shayan</p>
         <p>
           Read about Netflix TV shows and movies and watch bonus videos on
-          Tudum.com.
+          mlwbd.com.
         </p>
       </div>
       <p className="pb-5">Questions? Contact us.</p>

@@ -13,8 +13,6 @@ const Browse = () => {
           fetchUrl: "movie/popular",
         };
       case "tv":
-        // We keep this browsing compatible with your existing `/movie/:id` page.
-        // This searches movie results related to "tv series".
         return {
           title: "TV Shows",
           fetchUrl: "search/movie?query=tv%20series&include_adult=false",

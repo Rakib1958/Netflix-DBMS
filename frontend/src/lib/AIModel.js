@@ -2,14 +2,9 @@ import axios from "axios";
 
 axios.defaults.withCredentials = true;
 
-// Must match auth requests: session cookies are set on the API origin (e.g. localhost:5000).
-// Relative `/api` only hits the Vite dev server proxy and does not send those cookies → 401.
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
-/**
- * Fetches AI movie recommendations from the backend.
- * Returns { recommendations: string[], fallback: boolean, message?: string }
- */
+
 export async function getAIRecommendation(userInputs) {
   try {
     const response = await axios.post(`${API_URL}/ai/recommendations`, userInputs, {
@@ -26,7 +21,6 @@ export async function getAIRecommendation(userInputs) {
     const status = error.response?.status;
     const data = error.response?.data;
 
-    // If the backend sent fallback recommendations even with an error status, use them.
     if (data?.recommendations?.length > 0) {
       return {
         recommendations: data.recommendations,

@@ -1,4 +1,4 @@
-export function signupVerificationEmail({ otp, appName = "AIFlix" }) {
+export function signupVerificationEmail({ otp, appName = "Netflix" }) {
   const text = `Your ${appName} verification code is: ${otp}\n\nThis code expires in 24 hours. If you did not create an account, ignore this email.`;
   const html = `
 <!DOCTYPE html>
@@ -11,7 +11,7 @@ export function signupVerificationEmail({ otp, appName = "AIFlix" }) {
   return { subject: `${appName} — verify your email`, text, html };
 }
 
-export function passwordResetEmail({ otp, appName = "AIFlix" }) {
+export function passwordResetEmail({ otp, appName = "Netflix" }) {
   const text = `Your ${appName} password reset code is: ${otp}\n\nThis code expires in 10 minutes. If you did not request a reset, ignore this email.`;
   const html = `
 <!DOCTYPE html>

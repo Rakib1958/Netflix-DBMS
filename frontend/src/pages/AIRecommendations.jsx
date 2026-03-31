@@ -79,7 +79,6 @@ const AIRecommendations = () => {
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
-      // no-op
     }
   };
 

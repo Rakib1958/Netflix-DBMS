@@ -10,7 +10,6 @@ export function resolveImageUrl(tmdbPath, dbUrl) {
   return "";
 }
 
-/** Extract YouTube video id from common URL shapes. */
 export function youtubeKeyFromUrl(url) {
   if (!url || typeof url !== "string") return null;
   const s = url.trim();
