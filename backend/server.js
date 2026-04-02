@@ -2,7 +2,7 @@ import "./config/loadEnv.js";
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { connectToDB, User, Media, Review, Rating, ensureDynamicColumns } from "../database/index.js";
+import { connectToDB, User, Media, Review, Rating, ensureDynamicColumns } from "./database/index.js";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";

@@ -1,6 +1,6 @@
-import "../../backend/config/loadEnv.js";
+import "../../config/loadEnv.js";
 import pkg from "pg";
-import { safeError, safeInfo, sanitizeForLog } from "../../backend/utils/rotation.js";
+import { safeError, safeInfo, sanitizeForLog } from "../../utils/rotation.js";
 const { Pool } = pkg;
 
 const pool = new Pool({

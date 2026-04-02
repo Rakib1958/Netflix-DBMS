@@ -5,5 +5,8 @@
     "build": "npm install --prefix frontend && npm run build --prefix frontend && npm install --prefix backend",
     "start": "node backend/server.js",
     "dev": "npm run dev --prefix backend"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
   }
 }
