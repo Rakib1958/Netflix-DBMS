@@ -13,6 +13,8 @@ import { signupVerificationEmail, passwordResetEmail } from "./utils/emailTempla
 import { GoogleGenAI } from "@google/genai";
 import { redactEmail, safeError, safeInfo, sanitizeForLog } from "./utils/rotation.js";
 
+console.log("GOOGLE_GENAI_API_KEY loaded?", !!process.env.GOOGLE_GENAI_API_KEY);
+
 const JWT_SECRET = process.env.JWT_SECRET?.trim();
 if (!JWT_SECRET) {
   safeError(
@@ -785,19 +787,20 @@ Recommend 10 ${mood.toLowerCase()} ${
   } catch (error) {
     safeError("AI recommendation error:", error);
     const isQuotaError = /rate limit|quota|RESOURCE_EXHAUSTED|429/i.test(error.message);
+    const underlyingMessage = error?.message || "Unknown AI recommendation error";
 
     if (isQuotaError) {
       return res.status(429).json({
         recommendations: ["The Shawshank Redemption", "Inception", "The Dark Knight", "Interstellar", "Parasite"],
         fallback: true,
-        message: "AI quota exceeded, showing curated fallback recommendations"
+        message: `AI quota exceeded, showing curated fallback recommendations (reason: ${underlyingMessage})`
       });
     }
 
     res.status(500).json({
       recommendations: ["The Shawshank Redemption", "Inception", "The Dark Knight", "Interstellar", "Parasite"],
       fallback: true,
-      message: "AI service temporarily unavailable, showing curated fallback recommendations"
+      message: `AI service temporarily unavailable, showing curated fallback recommendations (reason: ${underlyingMessage})`
     });
   }
 });
