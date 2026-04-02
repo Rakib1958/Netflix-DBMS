@@ -1,5 +1,5 @@
 {
-  "name": "aiflix-fullstack",
+  "name": "netflix-fullstack",
   "version": "1.0.0",
   "scripts": {
     "build": "npm install --prefix frontend && npm run build --prefix frontend && npm install --prefix backend",
