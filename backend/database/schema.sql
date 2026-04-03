@@ -17,7 +17,7 @@ CREATE TABLE Media (
     rating DECIMAL(3,1) CHECK (rating >= 0 AND rating <= 10) DEFAULT 0,
     num_votes BIGINT DEFAULT 0,
     poster_url VARCHAR(500),
-    backdrop_url VARCHAR(500), -- Added backdrop support
+    backdrop_url VARCHAR(500), 
     trailer_url VARCHAR(500),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -71,10 +71,6 @@ CREATE TABLE Episode (
     UNIQUE(season_id, episode_number)
 );
 
--- ============================================
--- PEOPLE & TALENT
--- ============================================
-
 CREATE TABLE Person (
     person_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     full_name VARCHAR(255) NOT NULL,
@@ -100,9 +96,6 @@ CREATE TABLE Credit (
     role_description TEXT
 );
 
--- ============================================
--- CLASSIFICATION & METADATA
--- ============================================
 
 CREATE TABLE Genre (
     genre_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -116,16 +109,13 @@ CREATE TABLE MediaGenre (
     PRIMARY KEY (media_id, genre_id)
 );
 
--- ============================================
--- USER ENGAGEMENT
--- ============================================
 
 CREATE TABLE "User" (
     user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(20) DEFAULT 'user' CHECK (role IN ('user', 'admin')), -- Added Role
+    role VARCHAR(20) DEFAULT 'user' CHECK (role IN ('user', 'admin')), 
     birth_date DATE,
     country_code CHAR(2),
     profile_picture VARCHAR(500),
@@ -170,9 +160,6 @@ CREATE TABLE Watchlist (
     PRIMARY KEY (user_id, media_id)
 );
 
--- ============================================
--- FUNCTIONS & TRIGGERS
--- ============================================
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -247,11 +234,6 @@ CREATE TRIGGER trg_update_review_votes
     FOR EACH ROW
     EXECUTE PROCEDURE update_review_votes();
 
--- ============================================
--- STORED PROCEDURES
--- ============================================
-
--- Procedure to create a review with initial validation
 CREATE OR REPLACE PROCEDURE create_user_review(
     p_user_id UUID,
     p_media_id UUID,
@@ -263,7 +245,6 @@ AS $$
 DECLARE
     review_count INT;
 BEGIN
-    -- Check if user already reviewed this media
     SELECT COUNT(*) INTO review_count
     FROM Review
     WHERE user_id = p_user_id AND media_id = p_media_id;
@@ -272,35 +253,21 @@ BEGIN
         RAISE EXCEPTION 'User has already reviewed this media';
     END IF;
 
-    -- Validate rating if provided
     IF p_rating IS NOT NULL AND (p_rating < 1 OR p_rating > 10) THEN
         RAISE EXCEPTION 'Rating must be between 1 and 10';
     END IF;
 
-    -- Insert the review
     INSERT INTO Review (user_id, media_id, content, rating)
     VALUES (p_user_id, p_media_id, p_content, p_rating);
 
-    -- Log the action (could be used for audit trail)
-    -- INSERT INTO audit_log (action, user_id, media_id, timestamp)
-    -- VALUES ('review_created', p_user_id, p_media_id, NOW());
-
 END;
 $$;
-
--- ============================================
--- INDEXES
--- ============================================
 
 CREATE INDEX idx_media_type ON Media(media_type);
 CREATE INDEX idx_media_rating ON Media(rating);
 CREATE INDEX idx_media_title ON Media(title);
 CREATE INDEX idx_rating_media ON Rating(media_id);
 CREATE INDEX idx_review_media ON Review(media_id);
-
--- ============================================
--- SEED DATA (Minimal)
--- ============================================
 
 INSERT INTO Genre (name, description) VALUES
     ('Action', 'High-energy films'),
