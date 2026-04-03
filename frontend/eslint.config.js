@@ -1,3 +1,6 @@
+/**
+ * ESLint flat config for frontend JS/JSX (React hooks, refresh plugin, browser globals).
+ */
 import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'

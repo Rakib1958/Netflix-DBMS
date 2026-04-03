@@ -1,3 +1,6 @@
+/**
+ * Email templates for signup OTP and password reset (text + HTML).
+ */
 export function signupVerificationEmail({ otp, appName = "Netflix" }) {
   const text = `Your ${appName} verification code is: ${otp}\n\nThis code expires in 24 hours. If you did not create an account, ignore this email.`;
   const html = `

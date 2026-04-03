@@ -1,3 +1,6 @@
+/**
+ * User model: auth fields, profile, watchlist, admin ban/delete; uses pool + transactions where needed.
+ */
 import { pool } from '../config/db.js';
 
 export class User {

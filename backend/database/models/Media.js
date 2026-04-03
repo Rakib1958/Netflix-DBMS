@@ -1,3 +1,6 @@
+/**
+ * Media model: TMDB-linked rows, create stub, admin poster/backdrop/trailer/metadata.
+ */
 import { pool } from '../config/db.js';
 
 export class Media {

@@ -1,8 +1,21 @@
+/**
+ * Main HTTP server: Express app with middleware, REST routes, TMDB proxy, Gemini AI,
+ * and (in production) static serving of the built React SPA. Talks to PostgreSQL via
+ * pool + model classes from ./database.
+ */
 import "./config/loadEnv.js";
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { connectToDB, User, Media, Review, Rating, ensureDynamicColumns } from "./database/index.js";
+import {
+  connectToDB,
+  pool,
+  User,
+  Media,
+  Review,
+  Rating,
+  ensureDynamicColumns,
+} from "./database/index.js";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
@@ -13,8 +26,7 @@ import { signupVerificationEmail, passwordResetEmail } from "./utils/emailTempla
 import { GoogleGenAI } from "@google/genai";
 import { redactEmail, safeError, safeInfo, sanitizeForLog } from "./utils/rotation.js";
 
-console.log("GOOGLE_GENAI_API_KEY loaded?", !!process.env.GOOGLE_GENAI_API_KEY);
-
+// --- Env guard: without JWT_SECRET we cannot sign or verify tokens safely ---
 const JWT_SECRET = process.env.JWT_SECRET?.trim();
 if (!JWT_SECRET) {
   safeError(
@@ -26,10 +38,12 @@ if (!JWT_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// TMDB credentials (server-side only); used by the proxy route below so the browser never sees the key.
 const TMDB_TOKEN = process.env.TMDB_TOKEN?.trim();
 const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
+// Profile picture uploads: files saved under ./uploads and served at /uploads/...
 const uploadDir = path.join(path.resolve(), 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
@@ -45,6 +59,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
+// Global middleware: JSON bodies, cookies (JWT), CORS with credentials for SPA + httpOnly cookie auth.
 app.use(express.json());
 app.use(cookieParser());
 app.use(
@@ -58,6 +73,10 @@ app.use(
 );
 app.use('/uploads', express.static(uploadDir));
 
+/**
+ * GET /api/tmdb/<path> — Proxy to TMDB REST API.
+ * Keeps API key / bearer token on the server; validates path (no traversal, allowlist of prefixes).
+ */
 app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
   try {
     if (!TMDB_TOKEN && !TMDB_API_KEY) {
@@ -128,6 +147,10 @@ app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
   }
 });
 
+/**
+ * If the user row is banned but banned_until is in the past, clear ban in DB and on the in-memory row.
+ * Used so expired temporary bans are lifted without a separate cron job.
+ */
 const liftExpiredBanIfNeeded = async (userRow) => {
   if (!userRow) return userRow;
   const userId = userRow._id ?? userRow.user_id;
@@ -139,11 +162,15 @@ const liftExpiredBanIfNeeded = async (userRow) => {
   return userRow;
 };
 
+/** Human-readable message for banned users (permanent vs until timestamp). */
 const banBlockedMessage = (userRow) =>
   userRow?.banned_until == null
     ? "Account suspended"
     : `Account suspended until ${new Date(userRow.banned_until).toISOString()}`;
 
+/**
+ * Auth middleware: read httpOnly cookie `token`, verify JWT, load User, enforce ban, set req.user.
+ */
 const protectRoute = async (req, res, next) => {
   try {
     const token = req.cookies.token;
@@ -162,6 +189,7 @@ const protectRoute = async (req, res, next) => {
   }
 };
 
+/** Same as login check but requires role === 'admin' for admin-only API routes. */
 const adminRoute = async (req, res, next) => {
     try {
         const token = req.cookies.token;
@@ -177,6 +205,8 @@ const adminRoute = async (req, res, next) => {
     }
 };
 
+// --- Password reset (email OTP) ---
+/** Request password-reset OTP by email; persists OTP + expiry on User row and sends mail. */
 app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
   try {
@@ -203,6 +233,7 @@ app.post("/api/forgot-password", async (req, res) => {
   }
 });
 
+/** Verify reset OTP before allowing new password on reset-password. */
 app.post("/api/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
   try {
@@ -212,6 +243,7 @@ app.post("/api/verify-otp", async (req, res) => {
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
+/** Set new password after valid OTP. */
 app.post("/api/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
   try {
@@ -224,6 +256,8 @@ app.post("/api/reset-password", async (req, res) => {
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
+// --- Profile (authenticated) ---
+/** Update username/email/password hash / demographics; returns fresh user + watchlist. */
 app.put("/api/update-profile", protectRoute, async (req, res) => {
   const { username, email, password, birth_date, country_code } = req.body;
   try {
@@ -255,6 +289,7 @@ app.put("/api/update-profile", protectRoute, async (req, res) => {
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
+/** Multipart upload; stores file under uploads/ and saves URL on User row. */
 app.post("/api/upload-profile-pic", protectRoute, upload.single("profilePic"), async (req, res) => {
    try {
        if (!req.file) return res.status(400).json({ message: "No file uploaded" });
@@ -264,6 +299,8 @@ app.post("/api/upload-profile-pic", protectRoute, upload.single("profilePic"), a
    } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+// --- Signup & email verification ---
+/** Create User with bcrypt hash + verification OTP; optional admin role via ADMIN_SECRET. */
 app.post("/api/signup", async (req, res) => {
   const { username, email, password, adminCode } = req.body;
   try {
@@ -303,6 +340,7 @@ app.post("/api/signup", async (req, res) => {
   } catch (error) { res.status(400).json({ message: error.message }); }
 });
 
+/** Send a new signup verification OTP to the user's email. */
 app.post("/api/resend-verification", async (req, res) => {
   const { email } = req.body;
   try {
@@ -330,6 +368,7 @@ app.post("/api/resend-verification", async (req, res) => {
   }
 });
 
+/** Mark account verified and set JWT cookie (user can use the app). */
 app.post("/api/verify-email", async (req, res) => {
   const { email, otp } = req.body;
   try {
@@ -367,6 +406,8 @@ app.post("/api/verify-email", async (req, res) => {
   } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+// --- Login & session ---
+/** Validate credentials, enforce verify/ban, set JWT cookie, return user without password_hash + watchlist. */
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -399,6 +440,9 @@ app.post("/api/login", async (req, res) => {
   } catch (error) { res.status(400).json({ message: error.message }); }
 });
 
+/**
+ * Restore session on SPA load: verify cookie JWT, return user + watchlist (uses pool for one-shot query + join).
+ */
 app.get("/api/fetch-user", async (req, res) => {
   const { token } = req.cookies;
   if (!token) return res.status(401).json({ message: "No token" });
@@ -424,11 +468,14 @@ app.get("/api/fetch-user", async (req, res) => {
   } catch (error) { res.status(400).json({ message: error.message }); }
 });
 
+/** Clear auth cookie (client session ends; no DB session table). */
 app.post("/api/logout", (req, res) => {
   res.clearCookie("token");
   res.status(200).json({ message: "Logged out" });
 });
 
+// --- Watchlist ---
+/** Current user's watchlist as TMDB JSON blobs from Media.tmdb_data. */
 app.get("/api/watchlist", protectRoute, async (req, res) => {
   try {
       const watchlist = await User.getWatchlist(req.user._id);
@@ -436,6 +483,10 @@ app.get("/api/watchlist", protectRoute, async (req, res) => {
   } catch (err) { res.status(200).json({ watchlist: [] }); }
 });
 
+/**
+ * Ensure a Media row exists for this TMDB id (create stub from TMDB payload if missing).
+ * Returns internal media_id for FKs (watchlist, reviews, ratings).
+ */
 const ensureMediaStub = async (movie) => {
     let media = await Media.findByTmdbId(String(movie.id));
     if (!media) {
@@ -454,6 +505,7 @@ const ensureMediaStub = async (movie) => {
     return media.media_id;
 };
 
+/** Insert Watchlist row after ensureMediaStub; rejects if already present. */
 app.post("/api/watchlist/add", protectRoute, async (req, res) => {
   try {
     await ensureDynamicColumns();
@@ -469,6 +521,7 @@ app.post("/api/watchlist/add", protectRoute, async (req, res) => {
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
+/** Remove by TMDB id (resolves Media row then deletes watchlist link). */
 app.delete("/api/watchlist/remove/:id", protectRoute, async (req, res) => {
   try {
     const media = await Media.findByTmdbId(String(req.params.id));
@@ -480,11 +533,13 @@ app.delete("/api/watchlist/remove/:id", protectRoute, async (req, res) => {
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
+// --- Media: admin metadata & public reviews/ratings ---
+/** Public read of admin-overridden poster/backdrop/trailer and JSON metadata for a TMDB id. */
 app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
     try {
         await ensureDynamicColumns();
         const meta = await Media.getAdminMetadata(String(req.params.tmdbId));
-        if (rows.length === 0) {
+        if (!meta) {
             return res.status(200).json({
                 admin_metadata: null,
                 poster_url: null,
@@ -503,6 +558,7 @@ app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
     }
 });
 
+/** List reviews for a title (by TMDB id); empty if no Media stub yet. */
 app.get("/api/media/:tmdbId/reviews", async (req, res) => {
     try {
         const media = await Media.findByTmdbId(String(req.params.tmdbId));
@@ -514,6 +570,7 @@ app.get("/api/media/:tmdbId/reviews", async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Create review (one per user per media enforced in Review model / transaction). */
 app.post("/api/media/:tmdbId/reviews", protectRoute, async (req, res) => {
     try {
         const content = (req.body.content || "").trim();
@@ -526,6 +583,7 @@ app.post("/api/media/:tmdbId/reviews", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Like/dislike; DB triggers keep Review.likes / dislikes in sync. */
 app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     try {
         await Review.voteOnReview(req.user._id, req.params.reviewId, req.body.voteType);
@@ -533,6 +591,7 @@ app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Upsert user rating; triggers refresh Media.rating / num_votes aggregates. */
 app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
     try {
         const mediaId = await ensureMediaStub(req.body.movie);
@@ -541,6 +600,8 @@ app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+// --- Admin API (JWT + role admin) ---
+/** Paginate-free list of users for admin dashboard. */
 app.get("/api/admin/users", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
@@ -549,6 +610,7 @@ app.get("/api/admin/users", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Ban/unban user (cannot target another admin); supports permanent or until timestamp. */
 app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
@@ -584,6 +646,7 @@ app.patch("/api/admin/users/:userId/ban", adminRoute, async (req, res) => {
     } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Hard-delete user (cascades per FK definitions in schema). */
 app.delete("/api/admin/users/:userId", adminRoute, async (req, res) => {
     try {
         await User.deleteUser(req.params.userId);
@@ -591,6 +654,7 @@ app.delete("/api/admin/users/:userId", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** All reviews with usernames and media titles for moderation UI. */
 app.get("/api/admin/reviews", adminRoute, async (req, res) => {
     try {
         const reviews = await Review.getAllReviewsForAdmin();
@@ -598,6 +662,7 @@ app.get("/api/admin/reviews", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Remove a single review by id. */
 app.delete("/api/admin/reviews/:reviewId", adminRoute, async (req, res) => {
     try {
         await Review.deleteReview(req.params.reviewId);
@@ -605,6 +670,7 @@ app.delete("/api/admin/reviews/:reviewId", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Override poster/backdrop/trailer URLs and merge admin_metadata JSONB. */
 app.put("/api/admin/media/:tmdbId/custom", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
@@ -630,17 +696,22 @@ app.put("/api/admin/media/:tmdbId/custom", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Liveness / sanity check for deploys and local dev. */
 app.get("/", (req, res) => { res.send("AIFlix Backend is Running!"); });
 
+// --- Gemini AI: request shape for generateContent ---
 const config = {
   responseMimeType: "text/plain",
 };
 
+/** Used when GEMINI_MODEL env is unset; first model that works wins. */
 const DEFAULT_MODEL_CANDIDATES = ["gemini-2.0-flash-001", "gemini-2.0-flash"];
 
-const aiCache = new Map(); 
-const AI_CACHE_TTL_MS = 6 * 60 * 60 * 1000; 
+/** In-memory cache: identical prompts skip API calls for AI_CACHE_TTL_MS. */
+const aiCache = new Map();
+const AI_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
+/** Parse comma-separated GEMINI_MODEL into a trimmed list of model ids. */
 function parseModelList(raw) {
   if (!raw || typeof raw !== "string") return [];
   return raw
@@ -649,11 +720,16 @@ function parseModelList(raw) {
     .filter(Boolean);
 }
 
+/** Pull plain text from @google/genai generateContent response shape. */
 function extractText(response) {
   const parts = response?.candidates?.[0]?.content?.parts || [];
   return parts.map((p) => p?.text).filter(Boolean).join("") || "";
 }
 
+/**
+ * Call Gemini with retries, optional model fallback list, and rate-limit backoff.
+ * Throws on missing key, exhausted quotas, or unsupported models (caller maps to HTTP + fallback list).
+ */
 async function getAIRecommendation(prompt) {
   const cached = aiCache.get(prompt);
   if (cached && cached.expiresAt > Date.now() && cached.text) {
@@ -716,6 +792,10 @@ async function getAIRecommendation(prompt) {
   );
 }
 
+/**
+ * Mood/genre/decade/etc. wizard → prompt → Gemini → parse JSON array of titles.
+ * On parse failure or API errors returns curated fallback list + message (200/429/500).
+ */
 app.post("/api/ai/recommendations", protectRoute, async (req, res) => {
   try {
     const { decade, genre, language, length, mood } = req.body;
@@ -806,11 +886,13 @@ Recommend 10 ${mood.toLowerCase()} ${
 });
 
 const __dirname = path.resolve();
+// Single-origin deploy: serve built Vite app and SPA fallback for client-side routes.
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "/frontend/dist")));
   app.get("*", (req, res) => { res.sendFile(path.resolve(__dirname, "frontend", "dist", "index.html")); });
 }
 
+/** Bind HTTP server then connect PostgreSQL pool (see database/config/db.js). */
 app.listen(PORT, async () => {
   await connectToDB();
   safeInfo(`Server is running on http://localhost:${PORT}`);

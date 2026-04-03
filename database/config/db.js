@@ -1,3 +1,6 @@
+/**
+ * Alternate DB entry: pool + connect (imports backend loadEnv/rotation); use if tooling targets this path.
+ */
 import "../../backend/config/loadEnv.js";
 import pkg from "pg";
 import { safeError, safeInfo, sanitizeForLog } from "../../backend/utils/rotation.js";

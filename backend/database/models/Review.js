@@ -1,3 +1,6 @@
+/**
+ * Review model: list by media, create with duplicate check, votes, admin moderation.
+ */
 import { pool } from '../config/db.js';
 
 export class Review {

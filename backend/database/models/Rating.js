@@ -1,3 +1,6 @@
+/**
+ * Rating model: upsert user rating; DB triggers update Media aggregates.
+ */
 import { pool } from '../config/db.js';
 
 export class Rating {

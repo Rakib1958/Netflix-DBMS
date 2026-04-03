@@ -1,3 +1,6 @@
+/**
+ * Email transport: Nodemailer wrapper; send transactional mail when EMAIL_* env is set.
+ */
 import nodemailer from "nodemailer";
 import { redactEmail, safeError, sanitizeForLog } from "./rotation.js";
 

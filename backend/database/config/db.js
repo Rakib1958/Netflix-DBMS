@@ -1,3 +1,6 @@
+/**
+ * PostgreSQL connection pool and connect helper (used by models and server).
+ */
 import "../../config/loadEnv.js";
 import pkg from "pg";
 import { safeError, safeInfo, sanitizeForLog } from "../../utils/rotation.js";

@@ -1,3 +1,6 @@
+/**
+ * Zustand auth store: signup/login/logout, fetchUser, profile & watchlist sync (axios + credentials).
+ */
 import { create } from "zustand";
 import axios from "axios";
 

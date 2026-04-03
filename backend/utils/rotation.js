@@ -1,4 +1,6 @@
-
+/**
+ * Log sanitization: redact secrets, JWTs, URLs; safe console.error/log/warn wrappers.
+ */
 export function rotateString(input, shift = 13) {
   const s = String(input ?? "");
   const n = Number.isFinite(shift) ? ((shift % 26) + 26) % 26 : 13;

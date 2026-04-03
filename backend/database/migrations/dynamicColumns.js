@@ -1,3 +1,6 @@
+/**
+ * Runtime migrations: add optional User/Media columns if missing (verification, ban, TMDB JSON, etc.).
+ */
 import { pool } from '../config/db.js';
 
 export async function ensureDynamicColumns() {

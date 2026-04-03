@@ -1,3 +1,6 @@
+/**
+ * Client wrapper for POST /api/ai/recommendations (axios + cookie auth, fallback handling).
+ */
 import axios from "axios";
 
 axios.defaults.withCredentials = true;

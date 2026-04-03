@@ -1,4 +1,6 @@
-
+/**
+ * Profanity / coarse language scan for user-generated text (normalized substring checks).
+ */
 const RAW = `
 asshole bastard bitch bullshit crap damn fuck fucking motherfucker
 shit slut whore dick cock pussy cunt nigger faggot

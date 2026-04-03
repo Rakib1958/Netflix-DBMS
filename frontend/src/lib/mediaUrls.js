@@ -1,4 +1,6 @@
-/** Prefer DB override (full URL or TMDB-style path); fall back to TMDB path from API. */
+/**
+ * Helpers for poster/backdrop URLs: DB overrides (full URL or TMDB-style path) and TMDB CDN fallbacks.
+ */
 export function resolveImageUrl(tmdbPath, dbUrl) {
   if (dbUrl != null && String(dbUrl).trim() !== "") {
     const u = String(dbUrl).trim();
