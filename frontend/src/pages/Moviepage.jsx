@@ -7,9 +7,9 @@ import axios from "axios";
 import { resolveImageUrl, youtubeKeyFromUrl, catalogImageUrl } from "../lib/mediaUrls";
 import { fetchMovieDetail, fetchMovieRecommendations } from "../lib/catalogApi";
 import { formatDateOnly } from "../lib/dateDisplay";
+import { API_URL, getSiteOrigin } from "../lib/apiBase.js";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-const SITE_ORIGIN = API_URL.replace(/\/api\/?$/, "");
+const SITE_ORIGIN = getSiteOrigin();
 
 const Moviepage = () => {
   const { id } = useParams();
@@ -161,7 +161,7 @@ const Moviepage = () => {
       setReviewContent("");
       toast.success("Review posted");
     } catch (err) {
-      toast.error(err.response?.data?.message || "Error posting review");
+      toast.error(err.response?.data?.message || err.message || "Error posting review");
     }
   };
 

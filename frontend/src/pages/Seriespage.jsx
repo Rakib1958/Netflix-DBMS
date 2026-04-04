@@ -5,11 +5,38 @@ import { useAuthStore } from "../store/authStore";
 import { toast } from "react-hot-toast";
 import axios from "axios";
 import { resolveImageUrl, youtubeKeyFromUrl, catalogImageUrl } from "../lib/mediaUrls";
-import { fetchSeriesDetail, fetchSeriesRecommendations } from "../lib/catalogApi";
+import { fetchSeriesDetail, fetchSeriesRecommendations, fetchSeriesSeasons } from "../lib/catalogApi";
 import { formatDateOnly } from "../lib/dateDisplay";
+import { API_URL, getSiteOrigin } from "../lib/apiBase.js";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-const SITE_ORIGIN = API_URL.replace(/\/api\/?$/, "");
+const SITE_ORIGIN = getSiteOrigin();
+
+function EpisodeTitleWithDetails({ ep, epTitle }) {
+  const overview = ep.overview?.trim();
+  const hasDetails = Boolean(overview);
+  return (
+    <div className="group/ep relative inline-block max-w-full align-top">
+      <span
+        tabIndex={hasDetails ? 0 : undefined}
+        className={
+          hasDetails
+            ? "font-semibold text-white cursor-help border-b border-dotted border-gray-500 hover:border-gray-300 outline-none rounded-sm focus-visible:ring-2 focus-visible:ring-[#e50914]/70"
+            : "font-semibold text-white"
+        }
+      >
+        {ep.episode_number}. {epTitle}
+      </span>
+      {hasDetails ? (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute left-0 top-full z-50 mt-2 max-h-64 w-[min(22rem,calc(100vw-3rem))] overflow-y-auto rounded-lg border border-[#444] bg-[#1f1f1f] p-3 text-left text-sm font-normal font-sans leading-snug text-gray-300 shadow-xl opacity-0 transition-opacity duration-150 group-hover/ep:opacity-100 group-focus-within/ep:opacity-100"
+        >
+          {overview}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const Seriespage = () => {
   const { id } = useParams();
@@ -17,6 +44,8 @@ const Seriespage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
+  const [seasons, setSeasons] = useState([]);
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState(null);
 
   const [reviews, setReviews] = useState([]);
   const [reviewContent, setReviewContent] = useState("");
@@ -65,12 +94,19 @@ const Seriespage = () => {
       try {
         setLoading(true);
         setError(null);
+        setSeasons([]);
         const detail = await fetchSeriesDetail(id);
         if (cancelled) return;
         setShow(detail);
-        const rec = await fetchSeriesRecommendations(id);
+        const [recR, seaR] = await Promise.allSettled([
+          fetchSeriesRecommendations(id),
+          fetchSeriesSeasons(id),
+        ]);
         if (cancelled) return;
-        setRecommendations(rec);
+        setRecommendations(recR.status === "fulfilled" ? recR.value : []);
+        setSeasons(
+          seaR.status === "fulfilled" && Array.isArray(seaR.value) ? seaR.value : []
+        );
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
@@ -117,6 +153,27 @@ const Seriespage = () => {
     };
   }, [id]);
 
+  const sortedSeasons = useMemo(
+    () => [...seasons].sort((a, b) => (a.season_number ?? 0) - (b.season_number ?? 0)),
+    [seasons]
+  );
+
+  useEffect(() => {
+    if (!sortedSeasons.length) {
+      setSelectedSeasonNumber(null);
+      return;
+    }
+    setSelectedSeasonNumber((prev) => {
+      if (prev != null && sortedSeasons.some((s) => s.season_number === prev)) return prev;
+      return sortedSeasons[0].season_number;
+    });
+  }, [sortedSeasons]);
+
+  const activeSeason = useMemo(
+    () => sortedSeasons.find((s) => s.season_number === selectedSeasonNumber) ?? null,
+    [sortedSeasons, selectedSeasonNumber]
+  );
+
   const submitRating = async (val) => {
     if (!user) return toast.error("Sign in to rate!");
     if (!show) return toast.error("Series data not loaded");
@@ -146,7 +203,8 @@ const Seriespage = () => {
       setReviewContent("");
       toast.success("Review posted");
     } catch (err) {
-      toast.error(err.response?.data?.message || "Error posting review");
+      const msg = err.response?.data?.message || err.message || "Error posting review";
+      toast.error(msg);
     }
   };
 
@@ -284,6 +342,97 @@ const Seriespage = () => {
       </div>
 
       <div className="p-8">
+        <h2 className="text-2xl font-semibold mb-4">Episodes</h2>
+        {sortedSeasons.length === 0 ? (
+          <p className="text-gray-500 mb-10 max-w-2xl">
+            No seasons or episodes are stored for this series yet. With TMDB configured, new TV catalog seeds import
+            all seasons (optional cap via <code className="text-gray-400">TMDB_SEED_TV_SEASONS_MAX</code> in the backend
+            for faster test seeds).
+          </p>
+        ) : (
+          <div className="mb-10 rounded-lg border border-[#333] bg-[#232323] overflow-visible">
+            <div className="bg-[#2a2a2a] px-4 py-3 flex flex-col gap-3 border-b border-[#333] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
+              <label className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:gap-3">
+                <span className="font-medium text-gray-300 shrink-0">Season</span>
+                <select
+                  value={selectedSeasonNumber ?? ""}
+                  onChange={(e) => setSelectedSeasonNumber(Number(e.target.value))}
+                  className="min-w-[10rem] rounded-md border border-[#444] bg-[#181818] px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-[#e50914]"
+                >
+                  {sortedSeasons.map((s) => (
+                    <option key={s.season_id} value={s.season_number}>
+                      Season {s.season_number}
+                      {s.episodes?.length != null ? ` (${s.episodes.length} eps)` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {activeSeason ? (
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-gray-400">
+                  {activeSeason.air_date ? <span>Aired {formatDateOnly(activeSeason.air_date)}</span> : null}
+                  <span>
+                    {activeSeason.episodes?.length ?? 0} episode
+                    {(activeSeason.episodes?.length ?? 0) !== 1 ? "s" : ""}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+            {activeSeason?.overview?.trim() ? (
+              <div className="group/sv relative border-b border-[#333] px-4 py-2">
+                <span className="text-sm text-gray-500">
+                  <span className="cursor-help border-b border-dotted border-gray-600 text-gray-400 hover:border-gray-400">
+                    Season synopsis
+                  </span>
+                </span>
+                <div className="pointer-events-none absolute left-4 top-full z-40 mt-2 hidden max-h-48 w-[min(28rem,calc(100vw-3rem))] overflow-y-auto rounded-lg border border-[#444] bg-[#1f1f1f] p-3 text-sm text-gray-300 shadow-xl group-hover/sv:block">
+                  {activeSeason.overview}
+                </div>
+              </div>
+            ) : null}
+            <ul className="divide-y divide-[#333]">
+              {!activeSeason || (activeSeason.episodes || []).length === 0 ? (
+                <li className="px-4 py-4 text-gray-500 text-sm">No episodes listed for this season.</li>
+              ) : (
+                activeSeason.episodes.map((ep) => {
+                  const stillSrc = ep.still_url ? resolveImageUrl(null, ep.still_url) : "";
+                  const epTitle = ep.title?.trim() || `Episode ${ep.episode_number}`;
+                  return (
+                    <li
+                      key={ep.episode_id}
+                      className="flex flex-col sm:flex-row gap-4 p-4 hover:bg-[#1c1c1c] transition"
+                    >
+                      {stillSrc ? (
+                        <img
+                          src={stillSrc}
+                          alt=""
+                          className="w-full sm:w-40 shrink-0 h-24 object-cover rounded bg-[#181818]"
+                        />
+                      ) : (
+                        <div className="w-full sm:w-40 shrink-0 h-24 rounded bg-[#181818] flex items-center justify-center text-xs text-gray-600">
+                          No still
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <EpisodeTitleWithDetails ep={ep} epTitle={epTitle} />
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 mt-1">
+                          {ep.air_date ? <span>{formatDateOnly(ep.air_date)}</span> : null}
+                          {ep.runtime_minutes != null ? <span>{ep.runtime_minutes} min</span> : null}
+                          {ep.rating > 0 ? (
+                            <span>
+                              ⭐ {Number(ep.rating).toFixed(1)}
+                              {ep.num_votes > 0 ? ` (${ep.num_votes} votes)` : ""}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          </div>
+        )}
+
         <h2 className="text-2xl font-semibold mb-4">Rate & review</h2>
         <div className="bg-[#232323] rounded-lg p-6 mb-8 border border-[#333]">
           <p className="text-sm text-gray-400 mb-3">Your rating (1–10)</p>

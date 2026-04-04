@@ -4,10 +4,9 @@ import { toast } from "react-hot-toast";
 import { useAuthStore } from "../store/authStore";
 import { Users, MessageSquare, Film, Trash2, Pencil, Plus } from "lucide-react";
 import { fetchMovieDetail } from "../lib/catalogApi";
+import { API_URL } from "../lib/apiBase.js";
 
 axios.defaults.withCredentials = true;
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const emptyForm = () => ({
   title: "",

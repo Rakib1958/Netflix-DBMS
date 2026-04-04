@@ -2,10 +2,9 @@
  * Client wrapper for POST /api/ai/recommendations (axios + cookie auth, fallback handling).
  */
 import axios from "axios";
+import { API_URL } from "./apiBase.js";
 
 axios.defaults.withCredentials = true;
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 
 export async function getAIRecommendation(userInputs) {

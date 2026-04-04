@@ -188,6 +188,64 @@ async function seedMoviesFromTmdb(maxMovies, delayMs) {
   return { imported, skippedDup, failed };
 }
 
+/** Upper bound so a bad TMDB value cannot loop forever (longest real shows are still below this). */
+const TV_SEASONS_SAFETY_MAX = 500;
+
+/**
+ * Pull season/episode rows from TMDB into Season + Episode (best-effort).
+ * By default imports every season TMDB reports (up to TV_SEASONS_SAFETY_MAX).
+ * Set TMDB_SEED_TV_SEASONS_MAX to a positive integer to limit API calls during dev (e.g. 5).
+ */
+async function seedTvSeasonsForMedia(mediaId, tmdbNumericId, numberOfSeasons, delayMs) {
+  const total = Math.max(0, Math.floor(Number(numberOfSeasons) || 0));
+  if (total === 0) return;
+
+  const raw = process.env.TMDB_SEED_TV_SEASONS_MAX;
+  const trimmed = raw != null ? String(raw).trim() : "";
+  let maxSeasonsPerShow;
+  if (trimmed === "") {
+    maxSeasonsPerShow = Math.min(total, TV_SEASONS_SAFETY_MAX);
+  } else {
+    const n = parseInt(trimmed, 10);
+    maxSeasonsPerShow = Number.isFinite(n) && n > 0 ? Math.min(TV_SEASONS_SAFETY_MAX, n) : Math.min(total, TV_SEASONS_SAFETY_MAX);
+  }
+  const cap = Math.min(total, maxSeasonsPerShow);
+  if (cap === 0) return;
+
+  for (let sn = 1; sn <= cap; sn++) {
+    try {
+      const season = await tmdbGet(`tv/${tmdbNumericId}/season/${sn}`, {
+        language: "en-US",
+      });
+      if (!season || season.success === false || !Array.isArray(season.episodes)) continue;
+
+      const eps = season.episodes.map((e) => ({
+        episode_number: e.episode_number,
+        title: e.name,
+        air_date: e.air_date || null,
+        runtime_minutes:
+          e.runtime != null && Number.isFinite(Number(e.runtime)) ? Math.round(Number(e.runtime)) : null,
+        rating: e.vote_average != null ? Number(e.vote_average) : 0,
+        num_votes: e.vote_count != null ? Number(e.vote_count) : 0,
+        plot_summary: e.overview || null,
+        still_url: tmdbImageUrl(e.still_path, "w500"),
+      }));
+
+      await Media.upsertSeasonEpisodesForSeriesMedia(mediaId, sn, {
+        airDate: season.air_date || null,
+        overview: season.overview || null,
+        posterUrl: tmdbImageUrl(season.poster_path, "w500"),
+      }, eps);
+    } catch (e) {
+      safeError(
+        "TMDB TV season seed error:",
+        sanitizeForLog({ tmdbNumericId, season: sn, message: e.message })
+      );
+    }
+    if (delayMs > 0) await sleep(delayMs);
+  }
+}
+
 async function seedTvFromTmdb(maxSeries, delayMs) {
   let genreList = {};
   try {
@@ -245,7 +303,7 @@ async function seedTvFromTmdb(maxSeries, delayMs) {
         }
       }
 
-      await Media.createTvSeries({
+      const mediaId = await Media.createTvSeries({
         title: detail.name || detail.original_name || "Untitled",
         plotSummary: detail.overview || null,
         releaseDate: detail.first_air_date || null,
@@ -266,6 +324,13 @@ async function seedTvFromTmdb(maxSeries, delayMs) {
         seriesEnd: detail.last_air_date || null,
         status: mapTmdbTvStatus(detail.status),
       });
+
+      await seedTvSeasonsForMedia(
+        mediaId,
+        tmdbNumericId,
+        detail.number_of_seasons != null ? detail.number_of_seasons : 0,
+        delayMs
+      );
 
       imported++;
       if (delayMs > 0) await sleep(delayMs);

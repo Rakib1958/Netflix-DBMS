@@ -40,6 +40,157 @@ export class Media {
     return rows[0] || null;
   }
 
+  /**
+   * All seasons for a series (by catalog media_id) with nested episodes, ordered by season/episode number.
+   */
+  static async listSeasonsWithEpisodesByMediaId(mediaId) {
+    if (!isUuid(mediaId)) return [];
+    const { rows } = await pool.query(
+      `
+      SELECT
+        s.season_id,
+        s.season_number,
+        s.episode_count,
+        s.air_date AS season_air_date,
+        s.overview AS season_overview,
+        s.poster_url AS season_poster_url,
+        e.episode_id,
+        e.episode_number,
+        e.title AS episode_title,
+        e.air_date AS episode_air_date,
+        e.runtime_minutes,
+        e.rating AS episode_rating,
+        e.num_votes AS episode_num_votes,
+        e.plot_summary AS episode_plot_summary,
+        e.still_url
+      FROM TVSeries tv
+      INNER JOIN Season s ON s.series_id = tv.series_id
+      LEFT JOIN Episode e ON e.season_id = s.season_id
+      WHERE tv.media_id = $1
+      ORDER BY s.season_number ASC, e.episode_number ASC NULLS LAST
+    `,
+      [mediaId]
+    );
+
+    const bySeason = new Map();
+    for (const row of rows) {
+      const sid = row.season_id;
+      if (!bySeason.has(sid)) {
+        bySeason.set(sid, {
+          season_id: sid,
+          season_number: row.season_number,
+          episode_count: row.episode_count,
+          air_date: row.season_air_date,
+          overview: row.season_overview,
+          poster_url: row.season_poster_url,
+          episodes: [],
+        });
+      }
+      if (row.episode_id) {
+        bySeason.get(sid).episodes.push({
+          episode_id: row.episode_id,
+          episode_number: row.episode_number,
+          title: row.episode_title,
+          air_date: row.episode_air_date,
+          runtime_minutes: row.runtime_minutes,
+          rating:
+            row.episode_rating != null && row.episode_rating !== ''
+              ? parseFloat(row.episode_rating)
+              : 0,
+          num_votes:
+            row.episode_num_votes != null && row.episode_num_votes !== ''
+              ? parseInt(row.episode_num_votes, 10)
+              : 0,
+          overview: row.episode_plot_summary,
+          still_url: row.still_url,
+        });
+      }
+    }
+    return Array.from(bySeason.values());
+  }
+
+  /**
+   * Insert or update one season row and its episodes for a catalog series (media_id).
+   */
+  static async upsertSeasonEpisodesForSeriesMedia(mediaId, seasonNumber, seasonMeta, episodeRows) {
+    if (!isUuid(mediaId)) return;
+    const sn = Math.floor(Number(seasonNumber));
+    if (!Number.isFinite(sn) || sn < 0) return;
+
+    const { rows: sr } = await pool.query('SELECT series_id FROM TVSeries WHERE media_id = $1', [mediaId]);
+    const seriesId = sr[0]?.series_id;
+    if (!seriesId) return;
+
+    const eps = Array.isArray(episodeRows) ? episodeRows : [];
+    const { airDate, overview, posterUrl } = seasonMeta || {};
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: srows } = await client.query(
+        `
+        INSERT INTO Season (series_id, season_number, episode_count, air_date, overview, poster_url)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (series_id, season_number) DO UPDATE SET
+          episode_count = EXCLUDED.episode_count,
+          air_date = EXCLUDED.air_date,
+          overview = EXCLUDED.overview,
+          poster_url = EXCLUDED.poster_url
+        RETURNING season_id
+      `,
+        [seriesId, sn, eps.length, airDate || null, overview || null, posterUrl || null]
+      );
+      const seasonId = srows[0].season_id;
+
+      for (const ep of eps) {
+        const en = Math.floor(Number(ep.episode_number));
+        if (!Number.isFinite(en) || en < 0) continue;
+        const rt = ep.runtime_minutes != null ? Math.floor(Number(ep.runtime_minutes)) : null;
+        const rv =
+          ep.rating != null && Number.isFinite(Number(ep.rating))
+            ? Math.min(10, Math.max(0, Number(ep.rating)))
+            : 0;
+        const nv =
+          ep.num_votes != null && Number.isFinite(Number(ep.num_votes))
+            ? Math.max(0, Math.floor(Number(ep.num_votes)))
+            : 0;
+        await client.query(
+          `
+          INSERT INTO Episode (
+            season_id, episode_number, title, air_date, runtime_minutes, rating, num_votes, plot_summary, still_url
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (season_id, episode_number) DO UPDATE SET
+            title = EXCLUDED.title,
+            air_date = EXCLUDED.air_date,
+            runtime_minutes = EXCLUDED.runtime_minutes,
+            rating = EXCLUDED.rating,
+            num_votes = EXCLUDED.num_votes,
+            plot_summary = EXCLUDED.plot_summary,
+            still_url = EXCLUDED.still_url
+        `,
+          [
+            seasonId,
+            en,
+            ep.title || null,
+            ep.air_date || null,
+            rt,
+            rv,
+            nv,
+            ep.plot_summary || ep.overview || null,
+            ep.still_url || null,
+          ]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   static async findSummaryById(mediaId) {
     if (!isUuid(mediaId)) return null;
     const { rows } = await pool.query(

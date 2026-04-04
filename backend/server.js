@@ -110,6 +110,29 @@ function toMovieDetail(row, genres) {
   };
 }
 
+function normalizeSeasonsForApi(seasons) {
+  if (!Array.isArray(seasons)) return [];
+  return seasons.map((s) => ({
+    season_id: s.season_id,
+    season_number: s.season_number,
+    episode_count: s.episode_count,
+    air_date: toDateOnlyString(s.air_date),
+    overview: s.overview,
+    poster_url: s.poster_url,
+    episodes: (s.episodes || []).map((e) => ({
+      episode_id: e.episode_id,
+      episode_number: e.episode_number,
+      title: e.title,
+      air_date: toDateOnlyString(e.air_date),
+      runtime_minutes: e.runtime_minutes,
+      rating: e.rating,
+      num_votes: e.num_votes,
+      overview: e.overview,
+      still_url: e.still_url,
+    })),
+  }));
+}
+
 function toSeriesDetail(row, genres) {
   const st = String(row.status || "ongoing");
   const statusLabel =
@@ -231,6 +254,21 @@ app.get("/api/catalog/series/:mediaId", async (req, res) => {
     if (!row) return res.status(404).json({ message: "Series not found" });
     const genres = await Media.getGenresForMedia(mediaId);
     res.status(200).json(toSeriesDetail(row, genres));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** Seasons and episodes for a TV series (catalog media_id). */
+app.get("/api/catalog/series/:mediaId/seasons", async (req, res) => {
+  try {
+    await ensureDynamicColumns();
+    const { mediaId } = req.params;
+    if (!isUuid(mediaId)) return res.status(400).json({ message: "Invalid media id" });
+    const row = await Media.findSeriesById(mediaId);
+    if (!row) return res.status(404).json({ message: "Series not found" });
+    const seasons = await Media.listSeasonsWithEpisodesByMediaId(mediaId);
+    res.status(200).json({ seasons: normalizeSeasonsForApi(seasons) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -688,7 +726,7 @@ app.post("/api/media/:mediaId/reviews", protectRoute, async (req, res) => {
         if (!content) return res.status(400).json({ message: "Review cannot be empty" });
         if (content.length > 5000) return res.status(400).json({ message: "Review is too long" });
         const row = await Media.findSummaryById(mediaId);
-        if (!row) return res.status(404).json({ message: "Movie not found" });
+        if (!row) return res.status(404).json({ message: "Title not found in catalog" });
         await Review.createReview(req.user._id, mediaId, content);
         const reviews = await Review.getReviewsForMedia(mediaId);
         res.status(200).json({ reviews, message: "Review posted" });
@@ -727,7 +765,7 @@ app.post("/api/media/:mediaId/ratings", protectRoute, async (req, res) => {
         const { mediaId } = req.params;
         if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
         const row = await Media.findSummaryById(mediaId);
-        if (!row) return res.status(404).json({ message: "Movie not found" });
+        if (!row) return res.status(404).json({ message: "Title not found in catalog" });
 
         await Rating.rateMedia(req.user._id, mediaId, req.body.rating);
 

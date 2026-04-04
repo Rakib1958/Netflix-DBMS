@@ -3,16 +3,15 @@
  */
 import { create } from "zustand";
 import axios from "axios";
+import { API_URL, getSiteOrigin } from "../lib/apiBase.js";
 
 axios.defaults.withCredentials = true;
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const normalizeProfilePic = (pic) => {
   if (!pic) return pic;
   if (typeof pic !== "string") return pic;
   if (pic.startsWith("http://") || pic.startsWith("https://") || pic.startsWith("data:")) return pic;
-  const origin = API_URL.replace(/\/api\/?$/, "");
+  const origin = getSiteOrigin();
   const normalizedPath = pic.startsWith("/") ? pic : `/${pic}`;
   return `${origin}${normalizedPath}`;
 };
