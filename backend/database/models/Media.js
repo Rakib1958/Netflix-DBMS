@@ -58,4 +58,12 @@ export class Media {
       );
     }
   }
+
+  static async getRatingStats(tmdbId) {
+    const { rows } = await pool.query(
+      'SELECT rating, num_votes FROM Media WHERE tmdb_id = $1',
+      [String(tmdbId)]
+    );
+    return rows[0] || null;
+  }
 }

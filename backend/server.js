@@ -591,13 +591,48 @@ app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
+/** Get current rating statistics for a media (internal ratings, not TMDB). */
+app.get("/api/media/:tmdbId/rating-stats", async (req, res) => {
+    try {
+        await ensureDynamicColumns();
+        const tmdbId = String(req.params.tmdbId);
+        console.log("Getting rating stats for TMDB ID:", tmdbId);
+        const stats = await Media.getRatingStats(tmdbId);
+        console.log("Rating stats result:", stats);
+        
+        const rating = stats?.rating ? parseFloat(stats.rating) : 0;
+        const num_votes = stats?.num_votes ? parseInt(stats.num_votes) : 0;
+        
+        res.status(200).json({ rating, num_votes });
+    } catch(err) { 
+        console.error("Rating stats error:", err);
+        res.status(500).json({ message: err.message }); 
+    }
+});
+
 /** Upsert user rating; triggers refresh Media.rating / num_votes aggregates. */
 app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
     try {
+        console.log("Rating endpoint - user:", req.user._id, "tmdbId:", req.params.tmdbId, "rating:", req.body.rating);
+        
+        await ensureDynamicColumns();
         const mediaId = await ensureMediaStub(req.body.movie);
+        console.log("Media ID:", mediaId);
+        
         await Rating.rateMedia(req.user._id, mediaId, req.body.rating);
-        res.status(200).json({ message: "Rating saved" });
-    } catch(err) { res.status(500).json({ message: err.message }); }
+        console.log("Rating saved, fetching stats...");
+        
+        const stats = await Media.getRatingStats(String(req.params.tmdbId));
+        console.log("Stats after rating:", stats);
+        
+        const rating = stats?.rating ? parseFloat(stats.rating) : 0;
+        const num_votes = stats?.num_votes ? parseInt(stats.num_votes) : 0;
+        
+        res.status(200).json({ message: "Rating saved", rating, num_votes });
+    } catch(err) { 
+        console.error("Rating endpoint error:", err);
+        res.status(500).json({ message: err.message }); 
+    }
 });
 
 // --- Admin API (JWT + role admin) ---

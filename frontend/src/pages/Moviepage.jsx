@@ -13,12 +13,16 @@ const SITE_ORIGIN = API_URL.replace(/\/api\/?$/, "");
 const Moviepage = () => {
   const { id } = useParams();
   const [movie, setMovie] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [trailerKey, setTrailerKey] = useState(null);
 
   const [reviews, setReviews] = useState([]);
   const [reviewContent, setReviewContent] = useState("");
   const [rating, setRating] = useState(0);
+  const [internalRating, setInternalRating] = useState(0);
+  const [internalVotes, setInternalVotes] = useState(0);
   const [mediaExtras, setMediaExtras] = useState({
     admin_metadata: null,
     poster_url: null,
@@ -62,6 +66,8 @@ const Moviepage = () => {
     let cancelled = false;
     (async () => {
       try {
+        setLoading(true);
+        setError(null);
         const [movieRes, recRes, vidRes] = await Promise.all([
           tmdbGet(`movie/${id}`, { language: "en-US" }),
           tmdbGet(`movie/${id}/recommendations`, { language: "en-US", page: 1 }),
@@ -74,15 +80,28 @@ const Moviepage = () => {
           (vid) => vid.site === "YouTube" && vid.type === "Trailer"
         );
         setTrailerKey(trailer?.key || null);
+        setLoading(false);
       } catch (err) {
-        if (!cancelled) console.error(err);
+        if (!cancelled) {
+          console.error("Error loading movie:", err);
+          setError("Failed to load movie");
+          setLoading(false);
+        }
       }
     })();
 
     axios
       .get(`${API_URL}/media/${id}/reviews`)
       .then((res) => setReviews(res.data.reviews || []))
-      .catch(() => {});
+      .catch((err) => console.error("Reviews fetch error:", err));
+
+    axios
+      .get(`${API_URL}/media/${id}/rating-stats`)
+      .then((res) => {
+        setInternalRating(res.data.rating || 0);
+        setInternalVotes(res.data.num_votes || 0);
+      })
+      .catch((err) => console.error("Rating stats fetch error:", err));
 
     axios
       .get(`${API_URL}/media/${id}/admin-meta`)
@@ -94,14 +113,15 @@ const Moviepage = () => {
           trailer_url: res.data.trailer_url,
         })
       )
-      .catch(() =>
+      .catch((err) => {
+        console.error("Admin meta fetch error:", err);
         setMediaExtras({
           admin_metadata: null,
           poster_url: null,
           backdrop_url: null,
           trailer_url: null,
-        })
-      );
+        });
+      });
     return () => {
       cancelled = true;
     };
@@ -109,12 +129,72 @@ const Moviepage = () => {
 
   const submitRating = async (val) => {
     if (!user) return toast.error("Sign in to rate!");
+    if (!movie) return toast.error("Movie data not loaded");
+    if (!val || val < 1 || val > 10) return toast.error("Invalid rating");
+    
     try {
-      await axios.post(`${API_URL}/media/${id}/ratings`, { movie, rating: val });
-      setRating(val);
-      toast.success("Rating submitted");
-    } catch {
-      toast.error("Error rating");
+      console.log("Submitting rating:", { 
+        movieId: id, 
+        rating: val,
+        movieTitle: movie?.title 
+      });
+      
+      // Only send necessary movie data to avoid circular references
+      const movieData = {
+        id: movie.id,
+        title: movie.title || movie.name,
+        poster_path: movie.poster_path,
+        backdrop_path: movie.backdrop_path,
+        release_date: movie.release_date || movie.first_air_date,
+        vote_average: movie.vote_average || 0,
+        vote_count: movie.vote_count || 0
+      };
+      
+      const response = await axios.post(`${API_URL}/media/${id}/ratings`, { 
+        movie: movieData, 
+        rating: val 
+      });
+      
+      console.log("Rating response:", response);
+      
+      if (response?.status === 200 && response?.data) {
+        setRating(val);
+        
+        const responseData = response.data;
+        const newRating = responseData.rating !== undefined && responseData.rating !== null 
+          ? parseFloat(responseData.rating) 
+          : 0;
+        const newVotes = responseData.num_votes !== undefined && responseData.num_votes !== null 
+          ? parseInt(responseData.num_votes) 
+          : 0;
+        
+        console.log("Setting ratings:", { newRating, newVotes });
+        
+        if (!isNaN(newRating)) setInternalRating(newRating);
+        if (!isNaN(newVotes)) setInternalVotes(newVotes);
+        
+        toast.success("Rating submitted");
+      } else {
+        throw new Error("Invalid response from server");
+      }
+    } catch (err) {
+      console.error("Rating error details:", {
+        message: err.message,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        responseData: err.response?.data,
+        errorType: err.constructor.name,
+        stack: err.stack
+      });
+      
+      let errorMsg = "Error rating";
+      if (err.response?.data?.message) {
+        errorMsg = err.response.data.message;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      
+      toast.error(errorMsg);
     }
   };
 
@@ -149,10 +229,18 @@ const Moviepage = () => {
     return `${SITE_ORIGIN}${pic}`;
   };
 
-  if (!movie) {
+  if (error) {
     return (
       <div className="flex items-center justify-center h-screen">
-        <span className="text-xl text-red-500">Loading...</span>
+        <span className="text-xl text-red-500">{error}</span>
+      </div>
+    );
+  }
+
+  if (loading || !movie) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <span className="text-xl text-gray-400">Loading...</span>
       </div>
     );
   }
@@ -178,7 +266,7 @@ const Moviepage = () => {
           <div>
             <h1 className="text-4xl font-bold mb-2">{movie.title}</h1>
             <div className="flex items-center gap-4 mb-2">
-              <span>⭐ {movie.vote_average?.toFixed(1)}</span>
+              <span>⭐ {internalRating > 0 ? internalRating.toFixed(1) : (movie.vote_average?.toFixed(1) || 'N/A')} ({internalVotes} ratings)</span>
               <span>{movie.release_date}</span>
               <span>{movie.runtime} min</span>
             </div>
