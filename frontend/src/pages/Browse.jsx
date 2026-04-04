@@ -10,32 +10,44 @@ const Browse = () => {
       case "movies":
         return {
           title: "Movies",
-          fetchUrl: "movie/popular",
+          section: "popular",
+          genre: "",
+          catalogType: "movies",
         };
       case "tv":
         return {
           title: "TV Shows",
-          fetchUrl: "search/movie?query=tv%20series&include_adult=false",
+          section: "popular",
+          genre: "",
+          catalogType: "series",
         };
       case "anime":
         return {
-          title: "Anime",
-          fetchUrl: "discover/movie?with_genres=16&sort_by=popularity.desc",
+          title: "Animation",
+          section: "all",
+          genre: "Animation",
+          catalogType: "series",
         };
       case "upcoming":
         return {
           title: "Upcoming",
-          fetchUrl: "movie/upcoming",
+          section: "upcoming",
+          genre: "",
+          catalogType: "movies",
         };
       case "popular":
         return {
           title: "Popular",
-          fetchUrl: "movie/popular",
+          section: "popular",
+          genre: "",
+          catalogType: "movies",
         };
       default:
         return {
           title: "Browse",
-          fetchUrl: "movie/popular",
+          section: "popular",
+          genre: "",
+          catalogType: "movies",
         };
     }
   })();
@@ -45,10 +57,19 @@ const Browse = () => {
       <h1 className="pt-10 pb-5 text-2xl md:text-3xl text-white font-semibold">
         {config.title}
       </h1>
-      <CardList title={config.title} fetchUrl={config.fetchUrl} category="popular" />
+      <p className="text-gray-500 text-sm -mt-4 mb-2 max-w-2xl">
+        {config.catalogType === "series"
+          ? "TV series from your PostgreSQL catalog (TMDB bootstrap or admin)."
+          : "Movies from your PostgreSQL catalog."}
+      </p>
+      <CardList
+        title={config.title}
+        section={config.section}
+        genre={config.genre}
+        catalogType={config.catalogType === "series" ? "series" : "movies"}
+      />
     </div>
   );
 };
 
 export default Browse;
-

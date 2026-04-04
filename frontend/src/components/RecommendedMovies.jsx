@@ -1,67 +1,64 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { tmdbGet } from "../lib/tmdbClient";
+import { matchCatalogTitles } from "../lib/catalogApi";
+import { catalogImageUrl } from "../lib/mediaUrls";
+import { formatDateOnly } from "../lib/dateDisplay";
 
 const RecommendedMovies = ({ movieTitles }) => {
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchMovie = async (title) => {
-    try {
-      const data = await tmdbGet("search/movie", {
-        query: title,
-        include_adult: "false",
-        language: "en-US",
-        page: 1,
-      });
-      return data.results?.[0] || null;
-    } catch {
-      return null;
-    }
-  };
-
   useEffect(() => {
     const loadMovies = async () => {
       setLoading(true);
-      const results = await Promise.all(
-        movieTitles.map((title) => fetchMovie(title))
-      );
-      setMovies(results.filter(Boolean));
+      try {
+        const results = await matchCatalogTitles(movieTitles);
+        setMovies(results);
+      } catch {
+        setMovies([]);
+      }
       setLoading(false);
     };
 
     if (movieTitles?.length) {
       loadMovies();
+    } else {
+      setMovies([]);
+      setLoading(false);
     }
   }, [movieTitles]);
 
   if (loading) {
-    return <p>Loading...</p>;
+    return <p className="text-gray-400">Loading matches from your catalog…</p>;
+  }
+
+  if (movies.length === 0) {
+    return (
+      <p className="text-gray-400 text-sm">
+        No matching titles in your database yet. Add those movies in the admin panel to see them here.
+      </p>
+    );
   }
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
       {movies.map((movie) => (
         <Link
-          to={`/movie/${movie.id}`}
+          to={movie.kind === "series" ? `/series/${movie.id}` : `/movie/${movie.id}`}
           key={movie.id}
           className="bg-[#232323] rounded-lg overflow-hidden"
         >
-          {movie.poster_path ? (
-            <img
-              src={`https://image.tmdb.org/t/p/w300${movie.poster_path}`}
-              className="w-full h-48 object-cover"
-            />
-          ) : (
-            <>No Image</>
-          )}
+          <img
+            src={catalogImageUrl(movie)}
+            className="w-full h-48 object-cover bg-[#181818]"
+            alt=""
+          />
 
           <div className="p-2">
-            <h3 className="text-sm font-semibold text-white truncate">
-              {movie.title}
-            </h3>
+            <h3 className="text-sm font-semibold text-white truncate">{movie.title}</h3>
             <p className="text-xs text-gray-400">
-              {movie.release_date ? movie.release_date.slice(0, 4) : "N/A"}
+              {movie.kind === "series" ? "TV · " : ""}
+              {formatDateOnly(movie.release_date)?.slice(0, 4) || "N/A"}
             </p>
           </div>
         </Link>

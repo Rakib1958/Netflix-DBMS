@@ -229,9 +229,16 @@ export const useAuthStore = create((set) => ({
     }
   },
 
-  addToWatchlist: async (movie) => {
+  addToWatchlist: async (mediaIdOrMovie) => {
     try {
-      const response = await axios.post(`${API_URL}/watchlist/add`, { movie });
+      const media_id =
+        typeof mediaIdOrMovie === "string" || typeof mediaIdOrMovie === "number"
+          ? String(mediaIdOrMovie)
+          : mediaIdOrMovie?.id != null
+            ? String(mediaIdOrMovie.id)
+            : null;
+      if (!media_id) throw new Error("Missing media id");
+      const response = await axios.post(`${API_URL}/watchlist/add`, { media_id });
       set((state) => ({
         user: { ...state.user, watchlist: response.data.watchlist },
       }));

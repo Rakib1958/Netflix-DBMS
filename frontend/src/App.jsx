@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router";
 import Navbar from "./components/Navbar";
 import Homepage from "./pages/Homepage";
 import Moviepage from "./pages/Moviepage";
+import Seriespage from "./pages/Seriespage";
 import SignIn from "./pages/SignIn";
 import SignUp from "./pages/SignUp";
 import { Toaster } from "react-hot-toast";
@@ -40,6 +41,7 @@ const App = () => {
         <Route path={"/"} element={<Homepage />} />
         <Route path={"/browse/:tab"} element={<Browse />} />
         <Route path={"/movie/:id"} element={<Moviepage />} />
+        <Route path={"/series/:id"} element={<Seriespage />} />
         <Route path={"/search"} element={<SearchResults />} />
         <Route path={"/signin"} element={!user ? <SignIn /> : <Navigate to="/" />} />
         <Route path={"/signup"} element={!user ? <SignUp /> : <Navigate to="/" />} />

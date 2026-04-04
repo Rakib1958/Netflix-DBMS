@@ -3,6 +3,8 @@ import { useAuthStore } from "../store/authStore";
 import { Link } from "react-router";
 import { Trash2, Film } from "lucide-react";
 import { toast } from "react-hot-toast";
+import { catalogImageUrl } from "../lib/mediaUrls";
+import { formatDateOnly } from "../lib/dateDisplay";
 
 const Watchlist = () => {
   const { user, removeFromWatchlist } = useAuthStore();
@@ -35,15 +37,18 @@ const Watchlist = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {watchlist.map((movie) => (
             <div key={movie.id} className="relative group bg-[#181818] rounded-lg overflow-hidden border border-[#333333] hover:scale-[1.08] transition duration-300">
-              <Link to={`/movie/${movie.id}`}>
+              <Link to={movie.kind === "series" ? `/series/${movie.id}` : `/movie/${movie.id}`}>
                 <img
-                  src={`https://image.tmdb.org/t/p/w500/${movie.backdrop_path || movie.poster_path}`}
+                  src={catalogImageUrl(movie)}
                   alt={movie.title}
-                  className="h-40 w-full object-cover"
+                  className="h-40 w-full object-cover bg-[#181818]"
                 />
                 <div className="p-3">
                   <p className="text-sm font-medium truncate">{movie.title || movie.original_title}</p>
-                  <p className="text-xs text-gray-400">{movie.release_date?.split("-")[0]}</p>
+                  <p className="text-xs text-gray-400">
+                    {movie.kind === "series" ? "TV · " : ""}
+                    {formatDateOnly(movie.release_date)?.slice(0, 4) || ""}
+                  </p>
                 </div>
               </Link>
               <button

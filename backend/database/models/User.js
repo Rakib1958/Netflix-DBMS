@@ -2,6 +2,7 @@
  * User model: auth fields, profile, watchlist, admin ban/delete; uses pool + transactions where needed.
  */
 import { pool } from '../config/db.js';
+import { toDateOnlyString } from '../../utils/dateOnly.js';
 
 export class User {
   // Authentication methods
@@ -141,8 +142,27 @@ export class User {
 
   // Watchlist methods
   static async getWatchlist(userId) {
-    const { rows } = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [userId]);
-    return rows.map(r => r.tmdb_data);
+    const { rows } = await pool.query(
+      `SELECT m.media_id, m.title, m.poster_url, m.backdrop_url, m.release_date, m.rating, m.num_votes, m.plot_summary, m.media_type
+       FROM Watchlist w
+       JOIN Media m ON w.media_id = m.media_id
+       WHERE w.user_id = $1
+       ORDER BY w.added_at DESC`,
+      [userId]
+    );
+    return rows.map((r) => ({
+      id: r.media_id,
+      kind: r.media_type === 'series' ? 'series' : 'movie',
+      title: r.title,
+      poster_url: r.poster_url,
+      backdrop_url: r.backdrop_url,
+      poster_path: null,
+      backdrop_path: null,
+      release_date: toDateOnlyString(r.release_date),
+      vote_average: r.rating != null ? parseFloat(r.rating) : 0,
+      vote_count: r.num_votes != null ? parseInt(r.num_votes, 10) : 0,
+      overview: r.plot_summary,
+    }));
   }
 
   static async checkInWatchlist(userId, mediaId) {

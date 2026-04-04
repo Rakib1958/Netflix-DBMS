@@ -4,7 +4,8 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { useAuthStore } from "../store/authStore";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "react-hot-toast";
-import { tmdbGet } from "../lib/tmdbClient";
+import { searchCatalog } from "../lib/catalogApi";
+import { catalogImageUrl } from "../lib/mediaUrls";
 
 const Navbar = () => {
   const { user, logout } = useAuthStore();
@@ -62,7 +63,7 @@ const Navbar = () => {
   }, [showMenu, showSuggestions]);
 
   useEffect(() => {
-    if (location.pathname.startsWith("/movie/")) {
+    if (location.pathname.startsWith("/movie/") || location.pathname.startsWith("/series/")) {
       setSearchQuery("");
       setShowSuggestions(false);
     }
@@ -79,18 +80,15 @@ const Navbar = () => {
     const controller = new AbortController();
     const t = setTimeout(async () => {
       try {
-        const data = await tmdbGet("search/movie", {
-          query: q,
-          include_adult: "false",
-          language: "en-US",
-          page: 1,
-        });
-        const list = data?.results || [];
+        const list = await searchCatalog(q, 8);
+        if (controller.signal.aborted) return;
         setSuggestions(list.slice(0, 7));
         setShowSuggestions(list.length > 0);
       } catch {
-        setSuggestions([]);
-        setShowSuggestions(false);
+        if (!controller.signal.aborted) {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
       }
     }, 350);
 
@@ -177,13 +175,13 @@ const Navbar = () => {
                   onClick={() => {
                     setShowSuggestions(false);
                     setSearchQuery("");
-                    navigate(`/movie/${m.id}`);
+                    navigate(m.kind === "series" ? `/series/${m.id}` : `/movie/${m.id}`);
                   }}
                   className="w-full flex items-center gap-3 px-3 py-2 hover:bg-[#1d1c1c] transition"
                 >
-                  {m.poster_path ? (
+                  {catalogImageUrl(m) ? (
                     <img
-                      src={`https://image.tmdb.org/t/p/w92${m.poster_path}`}
+                      src={catalogImageUrl(m)}
                       alt=""
                       className="w-10 h-14 object-cover rounded"
                     />
@@ -192,7 +190,7 @@ const Navbar = () => {
                   )}
                   <div className="min-w-0 text-left">
                     <div className="text-sm text-white font-semibold truncate">
-                      {m.title || m.original_title || m.name}
+                      {m.title || ""}
                     </div>
                   </div>
                 </button>

@@ -1,15 +1,35 @@
 /**
- * Helpers for poster/backdrop URLs: DB overrides (full URL or TMDB-style path) and TMDB CDN fallbacks.
+ * Helpers for poster/backdrop URLs: DB overrides, absolute URLs, TMDB-style paths, or /uploads.
  */
-export function resolveImageUrl(tmdbPath, dbUrl) {
+export function resolveImageUrl(primaryPath, dbUrl) {
   if (dbUrl != null && String(dbUrl).trim() !== "") {
     const u = String(dbUrl).trim();
     if (/^https?:\/\//i.test(u)) return u;
-    if (u.startsWith("/")) return `https://image.tmdb.org/t/p/original${u}`;
-    return u;
+    if (u.startsWith("/")) return u;
+    return `https://image.tmdb.org/t/p/original${u}`;
   }
-  if (tmdbPath) return `https://image.tmdb.org/t/p/original${tmdbPath}`;
+  if (primaryPath) {
+    const p = String(primaryPath).trim();
+    if (/^https?:\/\//i.test(p)) return p;
+    if (p.startsWith("/")) return p;
+    return `https://image.tmdb.org/t/p/original${p}`;
+  }
   return "";
+}
+
+/** Card / grid image: prefers backdrop, then poster (full URL, /uploads, or TMDB-style path). */
+export function catalogImageUrl(item) {
+  const API_ORIGIN =
+    typeof import.meta !== "undefined" && import.meta.env?.VITE_API_URL
+      ? String(import.meta.env.VITE_API_URL).replace(/\/api\/?$/, "")
+      : "http://localhost:5000";
+  const u = item?.backdrop_url || item?.poster_url || item?.backdrop_path || item?.poster_path;
+  if (!u) return "";
+  const s = String(u).trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith("/uploads")) return `${API_ORIGIN}${s}`;
+  if (s.startsWith("/")) return `https://image.tmdb.org/t/p/w500${s}`;
+  return `https://image.tmdb.org/t/p/w500/${s}`;
 }
 
 export function youtubeKeyFromUrl(url) {

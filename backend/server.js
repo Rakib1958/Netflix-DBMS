@@ -1,5 +1,5 @@
 /**
- * Main HTTP server: Express app with middleware, REST routes, TMDB proxy, Gemini AI,
+ * Main HTTP server: Express app with middleware, REST routes, DB-backed movie catalog, Gemini AI,
  * and (in production) static serving of the built React SPA. Talks to PostgreSQL via
  * pool + model classes from ./database.
  */
@@ -12,6 +12,7 @@ import {
   pool,
   User,
   Media,
+  isUuid,
   Review,
   Rating,
   ensureDynamicColumns,
@@ -25,6 +26,8 @@ import { sendTransactionalEmail, isEmailConfigured } from "./utils/mailer.js";
 import { signupVerificationEmail, passwordResetEmail } from "./utils/emailTemplates.js";
 import { GoogleGenAI } from "@google/genai";
 import { redactEmail, safeError, safeInfo, sanitizeForLog } from "./utils/rotation.js";
+import { seedCatalogFromTmdbIfEmpty } from "./utils/tmdbSeed.js";
+import { toDateOnlyString } from "./utils/dateOnly.js";
 
 // --- Env guard: without JWT_SECRET we cannot sign or verify tokens safely ---
 const JWT_SECRET = process.env.JWT_SECRET?.trim();
@@ -37,11 +40,6 @@ if (!JWT_SECRET) {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// TMDB credentials (server-side only); used by the proxy route below so the browser never sees the key.
-const TMDB_TOKEN = process.env.TMDB_TOKEN?.trim();
-const TMDB_API_KEY = process.env.TMDB_API_KEY?.trim();
-const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
 // Profile picture uploads: files saved under ./uploads and served at /uploads/...
 const uploadDir = path.join(path.resolve(), 'uploads');
@@ -73,77 +71,202 @@ app.use(
 );
 app.use('/uploads', express.static(uploadDir));
 
-/**
- * GET /api/tmdb/<path> — Proxy to TMDB REST API.
- * Keeps API key / bearer token on the server; validates path (no traversal, allowlist of prefixes).
- */
-app.get(/^\/api\/tmdb\/(.+)$/, async (req, res) => {
+function catalogCard(row, kindOverride) {
+  const kind = kindOverride || row.catalog_kind || "movie";
+  return {
+    id: row.media_id,
+    kind,
+    title: row.title,
+    poster_url: row.poster_url,
+    backdrop_url: row.backdrop_url,
+    release_date: toDateOnlyString(row.release_date),
+    rating: row.rating != null ? parseFloat(row.rating) : 0,
+    num_votes: row.num_votes != null ? parseInt(row.num_votes, 10) : 0,
+    overview: row.plot_summary,
+  };
+}
+
+function toMovieDetail(row, genres) {
+  return {
+    id: row.media_id,
+    kind: "movie",
+    title: row.title,
+    overview: row.plot_summary,
+    poster_path: row.poster_url,
+    backdrop_path: row.backdrop_url,
+    release_date: toDateOnlyString(row.release_date),
+    runtime: row.runtime_minutes,
+    vote_average: row.rating != null ? parseFloat(row.rating) : 0,
+    vote_count: row.num_votes != null ? parseInt(row.num_votes, 10) : 0,
+    original_language: row.original_language,
+    tagline: row.tagline,
+    genres: genres.map((g) => ({ id: g.genre_id, name: g.name })),
+    status: "Released",
+    budget: row.production_budget != null ? Number(row.production_budget) : null,
+    revenue: row.box_office_worldwide != null ? Number(row.box_office_worldwide) : null,
+    production_companies: [],
+    production_countries: [],
+    spoken_languages: [],
+  };
+}
+
+function toSeriesDetail(row, genres) {
+  const st = String(row.status || "ongoing");
+  const statusLabel =
+    st === "ended" ? "Ended" : st === "canceled" ? "Canceled" : "Ongoing";
+  return {
+    id: row.media_id,
+    kind: "series",
+    title: row.title,
+    overview: row.plot_summary,
+    poster_path: row.poster_url,
+    backdrop_path: row.backdrop_url,
+    release_date: toDateOnlyString(row.release_date),
+    first_air_date: toDateOnlyString(row.series_start || row.release_date),
+    last_air_date: toDateOnlyString(row.series_end),
+    runtime: row.runtime_minutes,
+    vote_average: row.rating != null ? parseFloat(row.rating) : 0,
+    vote_count: row.num_votes != null ? parseInt(row.num_votes, 10) : 0,
+    original_language: row.original_language,
+    genres: genres.map((g) => ({ id: g.genre_id, name: g.name })),
+    status: statusLabel,
+    number_of_seasons: row.total_seasons != null ? Number(row.total_seasons) : 0,
+    number_of_episodes: row.total_episodes != null ? Number(row.total_episodes) : 0,
+    tagline: null,
+    budget: null,
+    revenue: null,
+    production_companies: [],
+    production_countries: [],
+    spoken_languages: [],
+  };
+}
+
+function parseGenreNames(body) {
+  if (!body || body.genres === undefined || body.genres === null) return undefined;
+  if (Array.isArray(body.genres)) return body.genres.map((s) => String(s).trim()).filter(Boolean);
+  if (typeof body.genres === "string") {
+    try {
+      const p = JSON.parse(body.genres);
+      if (Array.isArray(p)) return p.map((s) => String(s).trim()).filter(Boolean);
+    } catch {
+      /* ignore */
+    }
+    return body.genres.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+const adminMovieUpload = upload.fields([
+  { name: "poster", maxCount: 1 },
+  { name: "backdrop", maxCount: 1 },
+]);
+
+function maybeAdminMovieUpload(req, res, next) {
+  const ct = req.headers["content-type"] || "";
+  if (ct.includes("multipart/form-data")) {
+    return adminMovieUpload(req, res, next);
+  }
+  next();
+}
+
+/** Public catalog lists (PostgreSQL). */
+app.get("/api/catalog/movies", async (req, res) => {
   try {
-    if (!TMDB_TOKEN && !TMDB_API_KEY) {
-      return res.status(503).json({
-        message: "TMDB is not configured. Set TMDB_TOKEN (v4) or TMDB_API_KEY (v3) in backend/.env",
-      });
-    }
-
-    const tmdbPath = req.params?.[0] || "";
-    if (
-      tmdbPath.includes("..") ||
-      tmdbPath.includes("\\") ||
-      tmdbPath.startsWith("http") ||
-      tmdbPath.includes("://")
-    ) {
-      return res.status(400).json({ message: "Invalid TMDB path" });
-    }
-
-    const allowedPrefixes = [
-      "movie/",
-      "search/",
-      "discover/",
-      "trending/",
-      "genre/",
-      "tv/",
-      "person/",
-      "configuration/",
-    ];
-    if (!allowedPrefixes.some((p) => tmdbPath.startsWith(p))) {
-      return res.status(403).json({ message: "TMDB path not allowed" });
-    }
-
-    const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(req.query || {})) {
-      if (v === undefined || v === null) continue;
-      qs.set(k, String(v));
-    }
-
-    const isJwtLike = !!TMDB_TOKEN && /^eyJ[A-Za-z0-9_-]+\./.test(TMDB_TOKEN);
-    const effectiveApiKey = TMDB_API_KEY || (!isJwtLike ? TMDB_TOKEN : null);
-    if (effectiveApiKey) {
-      qs.set("api_key", effectiveApiKey);
-    }
-
-    const url = `${TMDB_BASE_URL}/${tmdbPath}${qs.toString() ? `?${qs.toString()}` : ""}`;
-
-    const useBearer = isJwtLike;
-    const tmdbRes = await fetch(url, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        ...(useBearer ? { Authorization: `Bearer ${TMDB_TOKEN}` } : {}),
-      },
-    });
-
-    const contentType = tmdbRes.headers.get("content-type") || "";
-    const body = contentType.includes("application/json")
-      ? await tmdbRes.json()
-      : await tmdbRes.text();
-
-    return res.status(tmdbRes.status).json(body);
+    await ensureDynamicColumns();
+    const section = String(req.query.section || "all");
+    const genre = String(req.query.genre || "");
+    const limit = req.query.limit;
+    const rows = await Media.listMovies({ section, genre, limit, mediaType: "movie" });
+    res.status(200).json({ results: rows.map((r) => catalogCard(r, "movie")) });
   } catch (err) {
-    safeError("tmdb proxy error:", sanitizeForLog({
-      path: req?.params?.[0],
-      message: err?.message || String(err),
-    }));
-    return res.status(500).json({ message: "Failed to reach TMDB" });
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/catalog/movies/:mediaId", async (req, res) => {
+  try {
+    await ensureDynamicColumns();
+    const { mediaId } = req.params;
+    if (!isUuid(mediaId)) return res.status(400).json({ message: "Invalid media id" });
+    const row = await Media.findById(mediaId);
+    if (!row) return res.status(404).json({ message: "Movie not found" });
+    const genres = await Media.getGenresForMedia(mediaId);
+    res.status(200).json(toMovieDetail(row, genres));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/catalog/movies/:mediaId/recommendations", async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    if (!isUuid(mediaId)) return res.status(400).json({ message: "Invalid media id" });
+    const rows = await Media.listRecommendations(mediaId, 12);
+    res.status(200).json({ results: rows.map((r) => catalogCard(r, "movie")) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** TV series lists (same section names as movies). */
+app.get("/api/catalog/series", async (req, res) => {
+  try {
+    await ensureDynamicColumns();
+    const section = String(req.query.section || "all");
+    const genre = String(req.query.genre || "");
+    const limit = req.query.limit;
+    const rows = await Media.listSeries({ section, genre, limit });
+    res.status(200).json({ results: rows.map((r) => catalogCard(r, "series")) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/catalog/series/:mediaId", async (req, res) => {
+  try {
+    await ensureDynamicColumns();
+    const { mediaId } = req.params;
+    if (!isUuid(mediaId)) return res.status(400).json({ message: "Invalid media id" });
+    const row = await Media.findSeriesById(mediaId);
+    if (!row) return res.status(404).json({ message: "Series not found" });
+    const genres = await Media.getGenresForMedia(mediaId);
+    res.status(200).json(toSeriesDetail(row, genres));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/catalog/series/:mediaId/recommendations", async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    if (!isUuid(mediaId)) return res.status(400).json({ message: "Invalid media id" });
+    const rows = await Media.listRecommendationsSeries(mediaId, 12);
+    res.status(200).json({ results: rows.map((r) => catalogCard(r, "series")) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/api/catalog/search", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const limit = req.query.limit;
+    if (!q) return res.status(200).json({ results: [] });
+    const rows = await Media.searchCatalog(q, limit);
+    res.status(200).json({ results: rows.map((r) => catalogCard(r)) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post("/api/catalog/match-titles", async (req, res) => {
+  try {
+    const titles = req.body?.titles;
+    const matches = await Media.matchTitles(Array.isArray(titles) ? titles : []);
+    const items = matches.filter(Boolean).map((r) => catalogCard(r, r.catalog_kind));
+    res.status(200).json({ movies: items, matches: items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -461,8 +584,7 @@ app.get("/api/fetch-user", async (req, res) => {
     }
     
     delete userDoc.is_banned;
-    const wlRows = await pool.query('SELECT m.tmdb_data FROM Watchlist w JOIN Media m ON w.media_id = m.media_id WHERE w.user_id = $1', [userDoc._id]);
-    userDoc.watchlist = wlRows.rows.map(r => r.tmdb_data);
+    userDoc.watchlist = await User.getWatchlist(userDoc._id);
 
     res.status(200).json({ user: userDoc });
   } catch (error) { res.status(400).json({ message: error.message }); }
@@ -475,7 +597,7 @@ app.post("/api/logout", (req, res) => {
 });
 
 // --- Watchlist ---
-/** Current user's watchlist as TMDB JSON blobs from Media.tmdb_data. */
+/** Current user's watchlist (catalog summaries from PostgreSQL). */
 app.get("/api/watchlist", protectRoute, async (req, res) => {
   try {
       const watchlist = await User.getWatchlist(req.user._id);
@@ -483,62 +605,51 @@ app.get("/api/watchlist", protectRoute, async (req, res) => {
   } catch (err) { res.status(200).json({ watchlist: [] }); }
 });
 
-/**
- * Ensure a Media row exists for this TMDB id (create stub from TMDB payload if missing).
- * Returns internal media_id for FKs (watchlist, reviews, ratings).
- */
-const ensureMediaStub = async (movie) => {
-    let media = await Media.findByTmdbId(String(movie.id));
-    if (!media) {
-        return await Media.create({
-            title: movie.title || movie.name,
-            posterUrl: movie.poster_path,
-            backdropUrl: movie.backdrop_path,
-            releaseDate: movie.release_date || movie.first_air_date || null,
-            rating: movie.vote_average || 0,
-            numVotes: movie.vote_count || 0,
-            tmdbId: String(movie.id),
-            tmdbData: movie,
-            mediaType: 'movie'
-        });
-    }
-    return media.media_id;
-};
-
-/** Insert Watchlist row after ensureMediaStub; rejects if already present. */
+/** Add by internal media_id (UUID). */
 app.post("/api/watchlist/add", protectRoute, async (req, res) => {
   try {
     await ensureDynamicColumns();
-    const mediaId = await ensureMediaStub(req.body.movie);
-    
-    if (await User.checkInWatchlist(req.user._id, mediaId)) {
-        return res.status(400).json({ message: "Movie already in watchlist" });
+    const mediaId = req.body.media_id || req.body.mediaId;
+    if (!mediaId || !isUuid(String(mediaId))) {
+      return res.status(400).json({ message: "Valid media_id is required" });
     }
-    await User.addToWatchlist(req.user._id, mediaId);
-    
+    const row = await Media.findSummaryById(String(mediaId));
+    if (!row || (row.media_type !== "movie" && row.media_type !== "series")) {
+      return res.status(404).json({ message: "Title not found in catalog" });
+    }
+
+    if (await User.checkInWatchlist(req.user._id, row.media_id)) {
+        return res.status(400).json({ message: "Already in watchlist" });
+    }
+    await User.addToWatchlist(req.user._id, row.media_id);
+
     const watchlist = await User.getWatchlist(req.user._id);
     res.status(200).json({ watchlist, message: "Added" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
-/** Remove by TMDB id (resolves Media row then deletes watchlist link). */
+/** Remove by media_id (UUID). */
 app.delete("/api/watchlist/remove/:id", protectRoute, async (req, res) => {
   try {
-    const media = await Media.findByTmdbId(String(req.params.id));
-    if (media) {
-        await User.removeFromWatchlist(req.user._id, media.media_id);
+    const id = req.params.id;
+    if (isUuid(String(id))) {
+      await User.removeFromWatchlist(req.user._id, id);
     }
     const watchlist = await User.getWatchlist(req.user._id);
     res.status(200).json({ watchlist, message: "Removed" });
   } catch (error) { res.status(500).json({ message: error.message }); }
 });
 
-// --- Media: admin metadata & public reviews/ratings ---
-/** Public read of admin-overridden poster/backdrop/trailer and JSON metadata for a TMDB id. */
-app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
+// --- Media: admin metadata & public reviews/ratings (by catalog media_id UUID) ---
+/** Public read of admin poster/backdrop/trailer and JSON metadata. */
+app.get("/api/media/:mediaId/admin-meta", async (req, res) => {
     try {
         await ensureDynamicColumns();
-        const meta = await Media.getAdminMetadata(String(req.params.tmdbId));
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) {
+          return res.status(400).json({ message: "Invalid media id" });
+        }
+        const meta = await Media.getAdminMetadataByMediaId(String(mediaId));
         if (!meta) {
             return res.status(200).json({
                 admin_metadata: null,
@@ -558,25 +669,26 @@ app.get("/api/media/:tmdbId/admin-meta", async (req, res) => {
     }
 });
 
-/** List reviews for a title (by TMDB id); empty if no Media stub yet. */
-app.get("/api/media/:tmdbId/reviews", async (req, res) => {
+/** List reviews for a title. */
+app.get("/api/media/:mediaId/reviews", async (req, res) => {
     try {
-        const media = await Media.findByTmdbId(String(req.params.tmdbId));
-        if(!media) return res.status(200).json({ reviews: [] });
-        
-        const reviews = await Review.getReviewsForMedia(media.media_id);
-        
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) return res.status(200).json({ reviews: [] });
+        const reviews = await Review.getReviewsForMedia(mediaId);
         res.status(200).json({ reviews });
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
 /** Create review (one per user per media enforced in Review model / transaction). */
-app.post("/api/media/:tmdbId/reviews", protectRoute, async (req, res) => {
+app.post("/api/media/:mediaId/reviews", protectRoute, async (req, res) => {
     try {
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
         const content = (req.body.content || "").trim();
         if (!content) return res.status(400).json({ message: "Review cannot be empty" });
         if (content.length > 5000) return res.status(400).json({ message: "Review is too long" });
-        const mediaId = await ensureMediaStub(req.body.movie);
+        const row = await Media.findSummaryById(mediaId);
+        if (!row) return res.status(404).json({ message: "Movie not found" });
         await Review.createReview(req.user._id, mediaId, content);
         const reviews = await Review.getReviewsForMedia(mediaId);
         res.status(200).json({ reviews, message: "Review posted" });
@@ -591,47 +703,41 @@ app.post("/api/reviews/:reviewId/vote", protectRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
-/** Get current rating statistics for a media (internal ratings, not TMDB). */
-app.get("/api/media/:tmdbId/rating-stats", async (req, res) => {
+/** Get current rating statistics for a media (internal user ratings aggregate). */
+app.get("/api/media/:mediaId/rating-stats", async (req, res) => {
     try {
         await ensureDynamicColumns();
-        const tmdbId = String(req.params.tmdbId);
-        console.log("Getting rating stats for TMDB ID:", tmdbId);
-        const stats = await Media.getRatingStats(tmdbId);
-        console.log("Rating stats result:", stats);
-        
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) {
+          return res.status(200).json({ rating: 0, num_votes: 0 });
+        }
+        const stats = await Media.getRatingStatsByMediaId(String(mediaId));
         const rating = stats?.rating ? parseFloat(stats.rating) : 0;
-        const num_votes = stats?.num_votes ? parseInt(stats.num_votes) : 0;
-        
+        const num_votes = stats?.num_votes ? parseInt(stats.num_votes, 10) : 0;
         res.status(200).json({ rating, num_votes });
-    } catch(err) { 
-        console.error("Rating stats error:", err);
-        res.status(500).json({ message: err.message }); 
+    } catch(err) {
+        res.status(500).json({ message: err.message });
     }
 });
 
 /** Upsert user rating; triggers refresh Media.rating / num_votes aggregates. */
-app.post("/api/media/:tmdbId/ratings", protectRoute, async (req, res) => {
+app.post("/api/media/:mediaId/ratings", protectRoute, async (req, res) => {
     try {
-        console.log("Rating endpoint - user:", req.user._id, "tmdbId:", req.params.tmdbId, "rating:", req.body.rating);
-        
         await ensureDynamicColumns();
-        const mediaId = await ensureMediaStub(req.body.movie);
-        console.log("Media ID:", mediaId);
-        
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
+        const row = await Media.findSummaryById(mediaId);
+        if (!row) return res.status(404).json({ message: "Movie not found" });
+
         await Rating.rateMedia(req.user._id, mediaId, req.body.rating);
-        console.log("Rating saved, fetching stats...");
-        
-        const stats = await Media.getRatingStats(String(req.params.tmdbId));
-        console.log("Stats after rating:", stats);
-        
+
+        const stats = await Media.getRatingStatsByMediaId(String(mediaId));
         const rating = stats?.rating ? parseFloat(stats.rating) : 0;
-        const num_votes = stats?.num_votes ? parseInt(stats.num_votes) : 0;
-        
+        const num_votes = stats?.num_votes ? parseInt(stats.num_votes, 10) : 0;
+
         res.status(200).json({ message: "Rating saved", rating, num_votes });
-    } catch(err) { 
-        console.error("Rating endpoint error:", err);
-        res.status(500).json({ message: err.message }); 
+    } catch(err) {
+        res.status(500).json({ message: err.message });
     }
 });
 
@@ -705,30 +811,116 @@ app.delete("/api/admin/reviews/:reviewId", adminRoute, async (req, res) => {
     } catch(err) { res.status(500).json({ message: err.message }); }
 });
 
-/** Override poster/backdrop/trailer URLs and merge admin_metadata JSONB. */
-app.put("/api/admin/media/:tmdbId/custom", adminRoute, async (req, res) => {
+/** Override poster/backdrop/trailer URLs and merge admin_metadata JSONB (by media_id). */
+app.put("/api/admin/media/:mediaId/custom", adminRoute, async (req, res) => {
     try {
         await ensureDynamicColumns();
-        const mediaId = await ensureMediaStub(req.body.movie);
+        const { mediaId } = req.params;
+        if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
+        const row = await Media.findSummaryById(mediaId);
+        if (!row) return res.status(404).json({ message: "Movie not found" });
+
         await Media.updateMediaUrls(mediaId, {
             posterUrl: req.body.poster_url,
             backdropUrl: req.body.backdrop_url,
             trailerUrl: req.body.trailer_url
         });
-        
+
         const metaPatch = {};
         if (req.body.awards !== undefined) metaPatch.awards = req.body.awards;
         if (req.body.secondary_info !== undefined) metaPatch.secondary_info = req.body.secondary_info;
-        
+
         if (Object.keys(metaPatch).length > 0) {
             await Media.updateAdminMetadata(mediaId, metaPatch);
         }
-        
+
         if (req.body.admin_metadata && typeof req.body.admin_metadata === "object") {
             await Media.updateAdminMetadata(mediaId, req.body.admin_metadata);
         }
         res.status(200).json({ message: "Media customized successfully" });
     } catch(err) { res.status(500).json({ message: err.message }); }
+});
+
+function buildMoviePayloadFromRequest(req) {
+  const b = req.body || {};
+  const posterFile = req.files?.poster?.[0];
+  const backdropFile = req.files?.backdrop?.[0];
+  const posterUrl = posterFile ? `/uploads/${posterFile.filename}` : (b.poster_url || "").trim() || undefined;
+  const backdropUrl = backdropFile ? `/uploads/${backdropFile.filename}` : (b.backdrop_url || "").trim() || undefined;
+  const genres = parseGenreNames(b);
+
+  const num = (x) => {
+    if (x === "" || x === undefined || x === null) return undefined;
+    const n = Number(x);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const title = (b.title || "").trim();
+  return {
+    title: title || undefined,
+    plotSummary: (b.plot_summary || b.plotSummary || "").trim() || undefined,
+    releaseDate: (b.release_date || b.releaseDate || "").trim() || undefined,
+    releaseYear: num(b.release_year ?? b.releaseYear),
+    runtimeMinutes: num(b.runtime_minutes ?? b.runtimeMinutes),
+    originalLanguage: (b.original_language || b.originalLanguage || "").trim() || undefined,
+    posterUrl,
+    backdropUrl,
+    trailerUrl: (b.trailer_url || b.trailerUrl || "").trim() || undefined,
+    tagline: (b.tagline || "").trim() || undefined,
+    boxOfficeWorldwide: num(b.box_office_worldwide ?? b.boxOfficeWorldwide),
+    productionBudget: num(b.production_budget ?? b.productionBudget),
+    aspectRatio: (b.aspect_ratio || b.aspectRatio || "").trim() || undefined,
+    genreNames: genres,
+  };
+}
+
+/** Create catalog movie (JSON or multipart with optional poster/backdrop files). */
+app.post("/api/admin/movies", adminRoute, maybeAdminMovieUpload, async (req, res) => {
+  try {
+    await ensureDynamicColumns();
+    const payload = buildMoviePayloadFromRequest(req);
+    if (!payload.title) return res.status(400).json({ message: "title is required" });
+    const mediaId = await Media.createMovie(payload);
+    res.status(201).json({ message: "Movie created", media_id: mediaId });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** List movies for admin UI. */
+app.get("/api/admin/movies", adminRoute, async (req, res) => {
+  try {
+    const rows = await Media.listAllForAdmin();
+    res.status(200).json({ movies: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** Update catalog movie. */
+app.put("/api/admin/movies/:mediaId", adminRoute, maybeAdminMovieUpload, async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
+    const payload = buildMoviePayloadFromRequest(req);
+    await Media.updateMovie(mediaId, payload);
+    res.status(200).json({ message: "Movie updated" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** Delete catalog movie (cascades ratings, reviews, watchlist links). */
+app.delete("/api/admin/movies/:mediaId", adminRoute, async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    if (!isUuid(String(mediaId))) return res.status(400).json({ message: "Invalid media id" });
+    const ok = await Media.deleteMovie(mediaId);
+    if (!ok) return res.status(404).json({ message: "Movie not found" });
+    res.status(200).json({ message: "Movie deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 /** Liveness / sanity check for deploys and local dev. */
@@ -930,6 +1122,14 @@ if (process.env.NODE_ENV === "production") {
 /** Bind HTTP server then connect PostgreSQL pool (see database/config/db.js). */
 app.listen(PORT, async () => {
   await connectToDB();
+  await ensureDynamicColumns();
+  const seedResult = await seedCatalogFromTmdbIfEmpty();
+  if (seedResult.imported != null && seedResult.imported > 0) {
+    safeInfo(`TMDB bootstrap: imported ${seedResult.imported} movies into PostgreSQL.`);
+  }
+  if (seedResult.importedSeries != null && seedResult.importedSeries > 0) {
+    safeInfo(`TMDB bootstrap: imported ${seedResult.importedSeries} TV series into PostgreSQL.`);
+  }
   safeInfo(`Server is running on http://localhost:${PORT}`);
   if (isEmailConfigured()) {
     safeInfo("Email: ENABLED", { from: redactEmail(process.env.EMAIL_USER) });

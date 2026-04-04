@@ -5,15 +5,15 @@ import { useAuthStore } from "../store/authStore";
 import { toast } from "react-hot-toast";
 import axios from "axios";
 import { resolveImageUrl, youtubeKeyFromUrl, catalogImageUrl } from "../lib/mediaUrls";
-import { fetchMovieDetail, fetchMovieRecommendations } from "../lib/catalogApi";
+import { fetchSeriesDetail, fetchSeriesRecommendations } from "../lib/catalogApi";
 import { formatDateOnly } from "../lib/dateDisplay";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const SITE_ORIGIN = API_URL.replace(/\/api\/?$/, "");
 
-const Moviepage = () => {
+const Seriespage = () => {
   const { id } = useParams();
-  const [movie, setMovie] = useState(null);
+  const [show, setShow] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
@@ -36,16 +36,14 @@ const Moviepage = () => {
   const adminMeta = mediaExtras.admin_metadata;
 
   const posterSrc = useMemo(
-    () => resolveImageUrl(movie?.poster_path, mediaExtras.poster_url),
-    [movie, mediaExtras.poster_url]
+    () => resolveImageUrl(show?.poster_path, mediaExtras.poster_url),
+    [show, mediaExtras.poster_url]
   );
   const backdropSrc = useMemo(
-    () => resolveImageUrl(movie?.backdrop_path, mediaExtras.backdrop_url),
-    [movie, mediaExtras.backdrop_url]
+    () => resolveImageUrl(show?.backdrop_path, mediaExtras.backdrop_url),
+    [show, mediaExtras.backdrop_url]
   );
-  const effectiveTrailerKey = useMemo(() => {
-    return youtubeKeyFromUrl(mediaExtras.trailer_url);
-  }, [mediaExtras.trailer_url]);
+  const effectiveTrailerKey = useMemo(() => youtubeKeyFromUrl(mediaExtras.trailer_url), [mediaExtras.trailer_url]);
 
   const handleWatchlistToggle = async () => {
     try {
@@ -56,7 +54,7 @@ const Moviepage = () => {
         await addToWatchlist(id);
         toast.success("Added to watchlist");
       }
-    } catch (err) {
+    } catch {
       toast.error("An error occurred");
     }
   };
@@ -67,17 +65,17 @@ const Moviepage = () => {
       try {
         setLoading(true);
         setError(null);
-        const detail = await fetchMovieDetail(id);
+        const detail = await fetchSeriesDetail(id);
         if (cancelled) return;
-        setMovie(detail);
-        const rec = await fetchMovieRecommendations(id);
+        setShow(detail);
+        const rec = await fetchSeriesRecommendations(id);
         if (cancelled) return;
         setRecommendations(rec);
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
-          console.error("Error loading movie:", err);
-          setError(err.response?.status === 404 ? "Movie not found" : "Failed to load movie");
+          console.error("Error loading series:", err);
+          setError(err.response?.status === 404 ? "Series not found" : "Failed to load series");
           setLoading(false);
         }
       }
@@ -121,34 +119,21 @@ const Moviepage = () => {
 
   const submitRating = async (val) => {
     if (!user) return toast.error("Sign in to rate!");
-    if (!movie) return toast.error("Movie data not loaded");
+    if (!show) return toast.error("Series data not loaded");
     if (!val || val < 1 || val > 10) return toast.error("Invalid rating");
-
     try {
-      const response = await axios.post(`${API_URL}/media/${id}/ratings`, {
-        rating: val,
-      });
-
+      const response = await axios.post(`${API_URL}/media/${id}/ratings`, { rating: val });
       if (response?.status === 200 && response?.data) {
         setRating(val);
-        const responseData = response.data;
-        const newRating =
-          responseData.rating !== undefined && responseData.rating !== null
-            ? parseFloat(responseData.rating)
-            : 0;
-        const newVotes =
-          responseData.num_votes !== undefined && responseData.num_votes !== null
-            ? parseInt(responseData.num_votes, 10)
-            : 0;
+        const d = response.data;
+        const newRating = d.rating != null ? parseFloat(d.rating) : 0;
+        const newVotes = d.num_votes != null ? parseInt(d.num_votes, 10) : 0;
         if (!isNaN(newRating)) setInternalRating(newRating);
         if (!isNaN(newVotes)) setInternalVotes(newVotes);
         toast.success("Rating submitted");
-      } else {
-        throw new Error("Invalid response from server");
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.message || err.message || "Error rating";
-      toast.error(errorMsg);
+      toast.error(err.response?.data?.message || err.message || "Error rating");
     }
   };
 
@@ -191,13 +176,16 @@ const Moviepage = () => {
     );
   }
 
-  if (loading || !movie) {
+  if (loading || !show) {
     return (
       <div className="flex items-center justify-center h-screen">
         <span className="text-xl text-gray-400">Loading...</span>
       </div>
     );
   }
+
+  const firstAir = formatDateOnly(show.first_air_date || show.release_date);
+  const lastAir = formatDateOnly(show.last_air_date);
 
   return (
     <div className="min-h-screen bg-[#181818] text-white">
@@ -210,31 +198,42 @@ const Moviepage = () => {
           backgroundPosition: "center",
         }}
       >
-        <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-transparent to-transparent"></div>
-
+        <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-transparent to-transparent" />
         <div className="relative z-10 flex items-end p-8 gap-8">
           {posterSrc && (
             <img src={posterSrc} alt="" className="rounded-lg shadow-lg w-48 hidden md:block object-cover aspect-[2/3]" />
           )}
-
           <div>
-            <h1 className="text-4xl font-bold mb-2">{movie.title}</h1>
-            <div className="flex items-center gap-4 mb-2">
+            <p className="text-sm text-gray-400 mb-1">TV Series</p>
+            <h1 className="text-4xl font-bold mb-2">{show.title}</h1>
+            <div className="flex flex-wrap items-center gap-4 mb-2">
               <span>
-                ⭐ {internalRating > 0 ? internalRating.toFixed(1) : movie.vote_average?.toFixed(1) || "N/A"} (
+                ⭐ {internalRating > 0 ? internalRating.toFixed(1) : show.vote_average?.toFixed(1) || "N/A"} (
                 {internalVotes} ratings)
               </span>
-              <span>{formatDateOnly(movie.release_date) || "—"}</span>
-              <span>{movie.runtime != null ? `${movie.runtime} min` : ""}</span>
+              <span>{show.status}</span>
+              {show.number_of_seasons != null ? (
+                <span>
+                  {show.number_of_seasons} season{show.number_of_seasons !== 1 ? "s" : ""}
+                  {show.number_of_episodes != null ? ` · ${show.number_of_episodes} episodes` : ""}
+                </span>
+              ) : null}
             </div>
             <div className="flex flex-wrap gap-2 mb-4">
-              {movie.genres?.map((genre) => (
+              {show.genres?.map((genre) => (
                 <span key={genre.id} className="bg-gray-800 px-3 py-1 rounded-full text-sm">
                   {genre.name}
                 </span>
               ))}
             </div>
-            <p className="max-w-2xl text-gray-200">{movie.overview}</p>
+            <p className="max-w-2xl text-gray-200">{show.overview}</p>
+            {(firstAir || lastAir) && (
+              <p className="text-sm text-gray-400 mt-2">
+                {firstAir ? <>First aired {firstAir}</> : null}
+                {firstAir && lastAir ? " · " : null}
+                {lastAir ? <>Last aired {lastAir}</> : null}
+              </p>
+            )}
             {adminMeta && (adminMeta.awards || adminMeta.secondary_info) && (
               <div className="mt-4 max-w-2xl space-y-2 text-sm border border-[#333] rounded-lg p-4 bg-black/30">
                 {adminMeta.awards && (
@@ -251,7 +250,7 @@ const Moviepage = () => {
                 )}
               </div>
             )}
-            <div className="flex flex-wrap gap-4 mt-2 md:mt-4">
+            <div className="flex flex-wrap gap-4 mt-4">
               {effectiveTrailerKey ? (
                 <a
                   href={`https://www.youtube.com/watch?v=${effectiveTrailerKey}`}
@@ -264,8 +263,8 @@ const Moviepage = () => {
               ) : (
                 <span className="text-gray-500 text-sm self-center">No trailer available</span>
               )}
-
               <button
+                type="button"
                 onClick={handleWatchlistToggle}
                 className="flex justify-center items-center bg-gray-600 bg-opacity-70 text-white py-3 px-6 rounded-full cursor-pointer text-sm md:text-base transition hover:bg-gray-500"
               >
@@ -306,7 +305,7 @@ const Moviepage = () => {
             <textarea
               value={reviewContent}
               onChange={(e) => setReviewContent(e.target.value)}
-              placeholder={user ? "Write a review (no profanity)…" : "Sign in to write a review"}
+              placeholder={user ? "Write a review…" : "Sign in to write a review"}
               disabled={!user}
               rows={4}
               className="w-full bg-[#333] px-4 py-3 rounded text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-[#e50914] disabled:opacity-50"
@@ -367,55 +366,31 @@ const Moviepage = () => {
         </div>
 
         <h2 className="text-2xl font-semibold mb-4">Details</h2>
-        <div className="bg-[#232323] rounded-lg shadow-lg p-6 flex flex-col md:flex-row gap-8">
-          <div className="flex-1">
-            <ul className="text-gray-300 space-y-3">
-              <li>
-                <span className="font-semibold text-white">Status: </span>
-                <span className="ml-2">{movie.status || "N/A"}</span>
-              </li>
-
-              <li>
-                <span className="font-semibold text-white">Release date: </span>
-                <span className="ml-2">{formatDateOnly(movie.release_date) || "N/A"}</span>
-              </li>
-
-              <li>
-                <span className="font-semibold text-white">Original language:</span>
-                <span className="ml-2">{movie.original_language?.toUpperCase() || "N/A"}</span>
-              </li>
-
-              <li>
-                <span className="font-semibold text-white">Budget: </span>
-                <span className="ml-2">{movie.budget ? `$${Number(movie.budget).toLocaleString()}` : "N/A"}</span>
-              </li>
-
-              <li>
-                <span className="font-semibold text-white">Box office:</span>{" "}
-                <span className="ml-2">
-                  {movie.revenue ? `$${Number(movie.revenue).toLocaleString()}` : "N/A"}
-                </span>
-              </li>
-            </ul>
-          </div>
-          <div className="flex-1">
-            <h3 className="font-semibold text-white mb-2">Tagline</h3>
-            <p className="italic text-gray-400 mb-6">{movie.tagline || "No tagline available."}</p>
-
-            <h3 className="font-semibold text-white mb-2">Overview</h3>
-            <p className="text-gray-200">{movie.overview}</p>
-          </div>
+        <div className="bg-[#232323] rounded-lg shadow-lg p-6">
+          <ul className="text-gray-300 space-y-3">
+            <li>
+              <span className="font-semibold text-white">Status: </span>
+              {show.status || "N/A"}
+            </li>
+            <li>
+              <span className="font-semibold text-white">Original language: </span>
+              {show.original_language?.toUpperCase() || "N/A"}
+            </li>
+            <li>
+              <span className="font-semibold text-white">Typical episode length: </span>
+              {show.runtime != null ? `${show.runtime} min` : "N/A"}
+            </li>
+          </ul>
         </div>
       </div>
 
       {recommendations.length > 0 && (
         <div className="p-8">
           <h2 className="text-2xl font-semibold mb-4">You might also like…</h2>
-
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {recommendations.slice(0, 10).map((rec) => (
               <div key={rec.id} className="bg-[#232323] rounded-lg overflow-hidden hover:scale-[1.08] transition">
-                <Link to={rec.kind === "series" ? `/series/${rec.id}` : `/movie/${rec.id}`}>
+                <Link to={`/series/${rec.id}`}>
                   <img
                     src={catalogImageUrl(rec)}
                     className="w-full h-48 object-cover bg-[#181818]"
@@ -423,9 +398,7 @@ const Moviepage = () => {
                   />
                   <div className="p-2">
                     <h3 className="text-sm font-semibold">{rec.title}</h3>
-                    <span className="text-xs text-gray-400">
-                      {formatDateOnly(rec.release_date)?.slice(0, 4) || ""}
-                    </span>
+                    <span className="text-xs text-gray-400">{formatDateOnly(rec.release_date)?.slice(0, 4) || ""}</span>
                   </div>
                 </Link>
               </div>
@@ -437,4 +410,4 @@ const Moviepage = () => {
   );
 };
 
-export default Moviepage;
+export default Seriespage;

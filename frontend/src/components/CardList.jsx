@@ -3,37 +3,24 @@ import { Swiper, SwiperSlide } from "swiper/react";
 import "swiper/css";
 import "swiper/css/navigation";
 import { Navigation } from "swiper/modules";
-import  {Link} from "react-router"
-import { tmdbGet } from "../lib/tmdbClient";
+import { Link } from "react-router";
+import { fetchCatalogMovies, fetchCatalogSeries } from "../lib/catalogApi";
+import { catalogImageUrl } from "../lib/mediaUrls";
 
-const CardList = ({ title, category, fetchUrl }) => {
+const CardList = ({ title, section = "all", genre = "", limit = 30, catalogType = "movies" }) => {
   const [data, setData] = useState([]);
+  const linkPrefix = catalogType === "series" ? "/series/" : "/movie/";
 
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
       try {
-        const url = fetchUrl || `https://api.themoviedb.org/3/movie/${category}?language=en-US&page=1`;
-        const m = String(url).match(/api\.themoviedb\.org\/3\/(.+?)(\?.*)?$/i);
-        if (m) {
-          const path = m[1];
-          const params = Object.fromEntries(new URLSearchParams(m[2] || ""));
-          const res = await tmdbGet(path, params);
-          if (!cancelled) setData(res?.results || []);
-          return;
-        }
-
-        if (fetchUrl && !String(fetchUrl).startsWith("http")) {
-          const [path, qs = ""] = String(fetchUrl).split("?");
-          const extraParams = Object.fromEntries(new URLSearchParams(qs));
-          const res = await tmdbGet(path, { language: "en-US", page: 1, ...extraParams });
-          if (!cancelled) setData(res?.results || []);
-          return;
-        }
-
-        const res = await tmdbGet(`movie/${category}`, { language: "en-US", page: 1 });
-        if (!cancelled) setData(res?.results || []);
+        const rows =
+          catalogType === "series"
+            ? await fetchCatalogSeries(section, { genre, limit })
+            : await fetchCatalogMovies(section, { genre, limit });
+        if (!cancelled) setData(rows);
       } catch (err) {
         if (!cancelled) setData([]);
         console.error(err);
@@ -44,13 +31,16 @@ const CardList = ({ title, category, fetchUrl }) => {
     return () => {
       cancelled = true;
     };
-  }, [category, fetchUrl]);
+  }, [section, genre, limit, catalogType]);
 
   return (
     <div className="text-white md:px-4">
       <h2 className="pt-10 pb-5 text-lg font-medium">{title}</h2>
 
-      {}
+      {data.length === 0 ? (
+        <p className="text-gray-500 text-sm pb-6">No titles in this row yet — add movies in the admin panel.</p>
+      ) : null}
+
       <div className="cardListCarousel" tabIndex={0}>
         <Swiper
           slidesPerView={5}
@@ -66,16 +56,16 @@ const CardList = ({ title, category, fetchUrl }) => {
             1024: { slidesPerView: 6 },
           }}
         >
-          {data.map((item, index) => (
-            <SwiperSlide key={index} className="max-w-72 group">
-              <Link to={`/movie/${item.id}`}>
+          {data.map((item) => (
+            <SwiperSlide key={item.id} className="max-w-72 group">
+              <Link to={`${linkPrefix}${item.id}`}>
                 <img
-                  src={`https://image.tmdb.org/t/p/w500/${item.backdrop_path || item.poster_path}`}
+                  src={catalogImageUrl(item) || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"}
                   alt=""
-                  className="h-44 w-full object-center object-cover transition duration-200 group-hover:scale-[1.09] group-hover:brightness-110"
+                  className="h-44 w-full object-center object-cover transition duration-200 group-hover:scale-[1.09] group-hover:brightness-110 bg-[#232323]"
                 />
                 <p className="text-center pt-2">
-                  {item.title || item.original_title || item.name || ""}
+                  {item.title || ""}
                 </p>
               </Link>
             </SwiperSlide>

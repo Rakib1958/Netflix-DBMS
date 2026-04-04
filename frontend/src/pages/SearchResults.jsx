@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { tmdbGet } from "../lib/tmdbClient";
+import { searchCatalog } from "../lib/catalogApi";
+import { catalogImageUrl } from "../lib/mediaUrls";
+import { formatDateOnly } from "../lib/dateDisplay";
 
 const SearchResults = () => {
   const [searchParams] = useSearchParams();
@@ -19,14 +21,9 @@ const SearchResults = () => {
     setLoading(true);
     (async () => {
       try {
-        const data = await tmdbGet("search/movie", {
-          query,
-          include_adult: "false",
-          language: "en-US",
-          page: 1,
-        });
+        const list = await searchCatalog(query, 40);
         if (cancelled) return;
-        setResults(data.results || []);
+        setResults(list);
       } catch {
         if (cancelled) return;
         setResults([]);
@@ -47,33 +44,34 @@ const SearchResults = () => {
         Search {query ? `: “${query}”` : ""}
       </h1>
 
-      {loading && <p className="text-gray-400">Searching...</p>}
+      {loading && <p className="text-gray-400">Searching catalog…</p>}
 
       {!loading && !query && (
         <p className="text-gray-400">Type something in the search bar.</p>
       )}
 
       {!loading && query && results.length === 0 && (
-        <p className="text-gray-400">No results found.</p>
+        <p className="text-gray-400">No results in the database.</p>
       )}
 
       {!loading && results.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           {results.slice(0, 24).map((m) => (
             <Link
-              to={`/movie/${m.id}`}
+              to={m.kind === "series" ? `/series/${m.id}` : `/movie/${m.id}`}
               key={m.id}
               className="bg-[#232323] rounded-lg overflow-hidden hover:scale-[1.08] transition"
             >
               <img
-                src={`https://image.tmdb.org/t/p/w300/${m.poster_path || m.backdrop_path}`}
+                src={catalogImageUrl(m) || undefined}
                 alt=""
-                className="w-full h-44 object-cover"
+                className="w-full h-44 object-cover bg-[#181818]"
               />
               <div className="p-2">
                 <p className="text-sm font-semibold text-white truncate">
-                  {m.title || m.original_title || m.name || ""}
+                  {m.kind === "series" ? `${m.title || ""} · TV` : m.title || ""}
                 </p>
+                <p className="text-xs text-gray-500">{formatDateOnly(m.release_date) || ""}</p>
               </div>
             </Link>
           ))}
@@ -84,4 +82,3 @@ const SearchResults = () => {
 };
 
 export default SearchResults;
-
